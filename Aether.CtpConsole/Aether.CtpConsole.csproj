@@ -31,6 +31,15 @@
     <ProjectReference Include="..\..\aether-trading\src\Aether.Trading.Scripting\Aether.Trading.Scripting.csproj" />
   </ItemGroup>
 
+  <!-- LeanData 最小子集（market-hours + symbol-properties）：Lean 引擎 handler 装配必需
+       （BacktestEnvironment.LocateLeanDataFolder 的 <exe>/LeanData fallback 命中）。
+       源自兄弟仓 aether-trading（跨仓相对路径，同上 ProjectReference 布局约定——CI/部署
+       兄弟仓并排 checkout 时同样成立）；构建即拷进输出，本地 dotnet run 无需工作区根 externals。 -->
+  <ItemGroup>
+    <Content Include="..\..\aether-trading\LeanData\**\*" CopyToOutputDirectory="PreserveNewest"
+             Link="LeanData\%(RecursiveDir)%(Filename)%(Extension)" />
+  </ItemGroup>
+
   <!-- libctp_native.dylib 的 @rpath 依赖三个 macOS frameworks（thosttraderapi_se/thostmduserapi_se/MacDataCollect）——
        ctp-net-core 的 Content 只带 build/native 的 dylib/so/dll，frameworks 不在其中；
        dyld 载入时全部链接镜像即解析，缺一个就 DllNotFoundException。构建后复制到输出目录

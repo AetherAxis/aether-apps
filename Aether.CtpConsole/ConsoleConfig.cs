@@ -5,7 +5,7 @@ using System.Text.Json.Serialization;
 //    的 `Console` 段与 System.Console 同名歧义；本仓 RootNamespace 为 `Aether.CtpConsole`）——
 
 /// <summary>
-/// 配置文件（<c>~/.aether/ctp-console/config.json</c>，可用 <c>--config</c> 覆盖路径）：前置地址/凭据存档案，
+/// 配置文件（cwd 的 <c>config.json</c>——「一个目录一个实例」，可用 <c>--config</c> 覆盖路径）：前置地址/凭据存档案，
 /// 免每次敲长参数串。命令行参数 &gt; 配置档案 &gt; 内置默认。密码明文入档——文件创建时 chmod 600（仅属主可读）。
 /// </summary>
 public sealed class ConsoleConfig
