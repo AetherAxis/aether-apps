@@ -161,9 +161,17 @@ if (args.FirstOrDefault(a => a.Equals("--run-strategy", StringComparison.Ordinal
     // StrategyRunAsync 的 parts[0] = 策略名（REPL 调它时已剥 "strategy run" 前缀）——这里同样不带前缀
     var passThrough = new List<string> { strategyName };
     passThrough.AddRange(instruments);
-    // 其余 -- 选项（--real/--max-volume/--engine/--resolution/--param/--verbose/--cash）原样透传给 StrategyRunAsync
+    // 其余 -- 选项（--real/--max-volume/--engine/--resolution/--param/--verbose/--cash）原样透传给 StrategyRunAsync。
+    // 控制台级参数（--config/--labs/--data/--profile/--exchange）不透传——旧版把它们连值一起当合约
+    // （合约=zx001,--exchange,117.72.186.128:17800——2026-10-20 实测踩中；用法注释尾部的 [--exchange] 照抄必踩）
+    var consoleKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "config", "labs", "data", "profile", "exchange" };
+    var skipValue = false;
     foreach (var a in args.Skip(rsIdx + 1).Skip(1 + instruments.Count))
+    {
+        if (skipValue) { skipValue = false; continue; }
+        if (a.StartsWith("--") && consoleKeys.Contains(a[2..])) { skipValue = true; continue; }
         if (a != rsFlag) passThrough.Add(a);
+    }
 
     await SweepOpenOrdersAsync();
     // 清场（旁路撤 30+ 张单触发前置推送流）期间 CTP 会话可能被断（4097——SDK 自动重连）——
