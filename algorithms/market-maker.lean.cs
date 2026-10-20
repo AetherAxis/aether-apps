@@ -1,0 +1,171 @@
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using Aether.Trading.Domain;
+using Aether.Trading.Runtime.Lean;
+using QuantConnect;
+using QuantConnect.Algorithm;
+using QuantConnect.Data;
+using QuantConnect.Orders;
+
+namespace LabsLeanAlgorithms;
+
+/// <summary>
+/// 做市商机器人（Lean 版）：围绕最新成交价上下各挂多档阶梯限价单（默认每侧 5 档），给交易所供给连续深度。
+/// 普通客户端策略（勾「真实下单」后经 wire 真实报单）。双向开仓做市（买开多 / 卖开空——2026-10-10
+/// 现货开空解禁后无需先充币攒库存即可双边挂单）。
+/// <para/>
+/// <b>防档位消失（带宽保留式维护，2026-10-04 单档改阶梯）</b>：期望档位 = last ∓ (SpreadTicks + i×LevelStepTicks) tick，
+/// 内到外。在挂腿价位仍在期望集合内 ⇒ 不动——价格滚动时只有边缘腿换防（撤最外档、补最内档），内侧腿持续在场；
+/// 单腿被吃掉其余档位仍在簿上，买1/卖1 不会突然空白，缺档下一数据事件补回。旧版每侧单档：腿被吃/移心撤单后
+/// 要等终态事件+下一数据事件才补挂，这个窗口里该侧就是空的。
+/// <para/>
+/// 义务自律（库存偏斜的连续版）：补挂预算 = PositionCap − 该向敞口（当前持仓 + 在挂剩余量）——全部成交后极限
+/// 持仓恰触仓限。仓位越满该侧深度越薄（外档先缺），触限停挂该侧全部腿，超限市价减仓（对手侧只有自己挂单时会被
+/// 交易所自成交跳过 ⇒ 该轮失败，下一数据事件自动重试——真实做市语义）。
+/// <para/>
+/// <b>挂单跟踪用 OrderTicket 自持</b>——brokerage 的 GetOpenOrders 刻意返空（引擎外订单不注册），
+/// 不能用它查自己的活单（会每帧重复挂单）；撤单是异步的：本轮撤、下一数据事件补（天然一跳延迟防双单——
+/// 撤单 pending 的腿仍占着价位，不会同价重复挂）。
+/// <para/>
+/// 用法：实盘 tab → 策略引擎选 LeanAlgorithm → 算法选「market-maker」→ 合约填 ax001 →
+/// 勾「真实下单」→ 前置登录后启动。PriceTick 默认 0.01（ax001 最小变动价位）。
+/// </summary>
+public class MarketMakerAlgo : LeanAlgorithmBase
+{
+    private Symbol _symbol;
+    private decimal _last;
+    private decimal _priceTick;
+    private int _spreadTicks;      // 内侧点差：最内档距最新价的 tick 数
+    private int _levelStepTicks;   // 相邻档位间距（tick 数）
+    private int _levels;           // 每侧档数
+    private decimal _quoteVolume;  // 单档挂单手数
+    private decimal _positionCap;
+    private readonly List<OrderTicket> _bidLegs = new();
+    private readonly List<OrderTicket> _askLegs = new();
+
+    public static IReadOnlyList<StrategyParameterDef> ParameterDefinitions => new[]
+    {
+        new StrategyParameterDef("SpreadTicks", "内侧点差（最内档距最新价 tick 数）", "2"),
+        new StrategyParameterDef("Levels", "每侧档位数", "5"),
+        new StrategyParameterDef("LevelStepTicks", "相邻档位间距（tick 数）", "1"),
+        new StrategyParameterDef("PriceTick", "最小变动价位", "0.01"),
+        new StrategyParameterDef("QuoteVolume", "单档挂单手数", "5"),
+        new StrategyParameterDef("PositionCap", "单边持仓上限（手）", "200"),
+    };
+
+    public override void Initialize()
+    {
+        ConfigureFromConfig();
+        _symbol = AddCtpData(GetParameter("symbol") ?? "ax001", Resolution.Second);
+
+        _priceTick = GetDecimalParam("PriceTick", 0.01m);
+        _spreadTicks = GetIntParam("SpreadTicks", 2);
+        _levelStepTicks = GetIntParam("LevelStepTicks", 1);
+        _levels = GetIntParam("Levels", 5);
+        _quoteVolume = GetDecimalParam("QuoteVolume", 5m);
+        _positionCap = GetDecimalParam("PositionCap", 200m);
+        // 兜底重挂（2026-10-18 36h 长跑定案）：算法纯事件驱动（tick→维护）——撤光/吃光挂单后若市场
+        // 完全静止（无挂/撤/成事件 ⇒ 无 tick），「下一数据事件补挂」永不发生 ⇒ 簿空自锁、市场假死
+        // （实测 MM 撤光后 14h 不补挂、NT 吃陈旧价全作废）。定时器独立于行情，保证静止市场也会恢复深度。
+        Schedule.On(DateRules.EveryDay(), TimeRules.Every(TimeSpan.FromSeconds(30)), () => RefreshQuotes());
+        BotLog($"[MM] 初始化 {_symbol.Value}: 上下各{_levels}档 点差{_spreadTicks}tick 档距{_levelStepTicks}tick 单档{_quoteVolume}手 仓限±{_positionCap}");
+    }
+
+    public override void OnData(Slice slice)
+    {
+        if (IsWarmingUp || !slice.TryGet<CtpBar>(_symbol, out var bar)) return;
+        if (_last == 0) BotLog($"[MM] 首帧行情 last={bar.Close}（自举成功——数据链已通）");
+        _last = bar.Close;   // 最新成交价（交易所模式：tick 即成交/簿事件驱动）
+        RefreshQuotes();
+    }
+
+    public override void OnOrderEvent(OrderEvent e)
+    {
+        // 终态（撤/成/拒）清票根——腿位留缺，下一数据事件补（天然一跳延迟防双单）
+        if (e.Status.IsClosed())
+        {
+            _bidLegs.RemoveAll(t => t.OrderId == e.OrderId);
+            _askLegs.RemoveAll(t => t.OrderId == e.OrderId);
+        }
+        if (e.Status is OrderStatus.Filled or OrderStatus.PartiallyFilled)
+            BotLog($"[MM] 成交 {e.Symbol.Value} {e.FillQuantity}@{e.FillPrice}（净持仓 {Portfolio[_symbol].Quantity}）");
+    }
+
+    /// <summary>阶梯维护：超限减仓 → 撤移出带宽/触限腿 → 补缺档（预算感知）。撤单异步——本轮不补挂，下一数据事件补。</summary>
+    private void RefreshQuotes()
+    {
+        var security = Portfolio[_symbol];
+        var pos = security.Quantity;
+        if (security.Price <= 0) return;   // 尚无行情价——市价减仓腿会被引擎拒价，等首个行情
+
+        // 超限减仓（自办强平）：市价吃非自有的对手流动性
+        if (pos > _positionCap) MarketOrder(_symbol, _positionCap - pos, tag: "超限减仓");
+        else if (pos < -_positionCap) MarketOrder(_symbol, -_positionCap - pos, tag: "超限减仓");
+
+        var desiredBids = DesiredLevels(bid: true);
+        var desiredAsks = DesiredLevels(bid: false);
+
+        RollStaleLegs(_bidLegs, desiredBids, pos >= _positionCap, "买");
+        RollStaleLegs(_askLegs, desiredAsks, pos <= -_positionCap, "卖");
+
+        // 补挂预算 = 仓限 − 该向敞口：多头越满买侧越薄，空头越满卖侧越薄
+        FillMissingLegs(_bidLegs, desiredBids, _positionCap - pos, isBid: true);
+        FillMissingLegs(_askLegs, desiredAsks, _positionCap + pos, isBid: false);
+    }
+
+    /// <summary>期望档位价集合（内到外）：last ∓ (SpreadTicks + i×档距)×PriceTick。</summary>
+    private List<decimal> DesiredLevels(bool bid)
+    {
+        var levels = new List<decimal>(_levels);
+        for (var i = 0; i < _levels; i++)
+        {
+            var offset = (_spreadTicks + i * _levelStepTicks) * _priceTick;
+            levels.Add(RoundToTick(bid ? _last - offset : _last + offset));
+        }
+        return levels;
+    }
+
+    /// <summary>撤移出带宽或触限的腿。撤单 pending 的腿不重复撤（等终态事件清根）。</summary>
+    private void RollStaleLegs(List<OrderTicket> legs, List<decimal> desired, bool capped, string side)
+    {
+        foreach (var leg in legs)
+        {
+            if (leg.Status == OrderStatus.CancelPending) continue;
+            var price = leg.Get(OrderField.LimitPrice);
+            if (capped || !desired.Contains(price))
+            {
+                BotLog($"[MM] 撤{side}腿 @{price}（移出带宽/触限）");
+                leg.Cancel();
+            }
+        }
+    }
+
+    /// <summary>
+    /// 补缺档（内档优先）：该价位无活腿（撤单 pending 的腿也占位——防同价双单）且预算有余才挂。
+    /// 预算先扣在挂剩余量，耗尽即停——外档先缺，仓位越满深度越薄。
+    /// </summary>
+    private void FillMissingLegs(List<OrderTicket> legs, List<decimal> desired, decimal budget, bool isBid)
+    {
+        if (budget <= 0) return;
+        var resting = legs.Sum(t => Math.Abs(t.QuantityRemaining));
+        foreach (var price in desired)
+        {
+            if (legs.Exists(t => t.Get(OrderField.LimitPrice) == price)) continue;
+            var volume = Math.Min(_quoteVolume, budget - resting);
+            if (volume < 1m) break;
+            legs.Add(LimitOrder(_symbol, isBid ? volume : -volume, price, tag: isBid ? "MM买" : "MM卖"));
+            resting += volume;
+            BotLog($"[MM] 挂{(isBid ? "买" : "卖")} {price} × {volume}手（last={_last}）");
+        }
+    }
+
+    private decimal RoundToTick(decimal price)
+        => _priceTick > 0 ? Math.Round(price / _priceTick) * _priceTick : price;
+
+    private decimal GetDecimalParam(string key, decimal fallback)
+        => GetParameter(key) is { Length: > 0 } s && decimal.TryParse(s, out var v) && v > 0 ? v : fallback;
+
+    private int GetIntParam(string key, int fallback)
+        => GetParameter(key) is { Length: > 0 } s && int.TryParse(s, out var v) && v > 0 ? v : fallback;
+}

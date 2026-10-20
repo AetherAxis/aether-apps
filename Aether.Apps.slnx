@@ -1,0 +1,7 @@
+<Solution>
+  <Project Path="Aether.CtpFront.Host/Aether.CtpFront.Host.csproj" />
+  <Project Path="Aether.Exchange.Host/Aether.Exchange.Host.csproj" />
+  <Project Path="Aether.Ledger.Node/Aether.Ledger.Node.csproj" />
+  <Project Path="Aether.Ledger.Verify/Aether.Ledger.Verify.csproj" />
+  <Project Path="Aether.CtpConsole/Aether.CtpConsole.csproj" />
+</Solution>

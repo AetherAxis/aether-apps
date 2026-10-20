@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AssemblyName>Aether.CtpFront.Host</AssemblyName>
+    <RootNamespace>Aether.CtpFront.Host</RootNamespace>
+  </PropertyGroup>
+  <!-- CTP 前置宿主（可执行组合根）：交易腿 + 行情腿。 -->
+  <ItemGroup>
+    <ProjectReference Include="..\..\ctp-net-front\src\Ctp.Net.Front\Ctp.Net.Front.csproj" />
+    <ProjectReference Include="..\..\aether-exchange\src\Aether.Exchange.Rpc\Aether.Exchange.Rpc.csproj" />
+    <ProjectReference Include="..\..\ctp-net-contracts\src\Ctp.Net.Contracts\Ctp.Net.Contracts.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.10" />
+    <PackageReference Include="Microsoft.Extensions.Hosting.WindowsServices" Version="10.0.10" />
+  </ItemGroup>
+</Project>

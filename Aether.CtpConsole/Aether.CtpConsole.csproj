@@ -1,0 +1,49 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AssemblyName>Aether.CtpConsole</AssemblyName>
+    <RootNamespace>Aether.CtpConsole</RootNamespace>
+  </PropertyGroup>
+
+  <!-- CTP console bot 宿主（组合根）：官方 SDK 会话（ICtpSession → ctp-net-client）+ Lean 实盘引擎
+       （ILiveTradingRuntime → aether-trading）+ 直跑挂机模式。策略/算法不在编译期——运行时从
+       ./labs（leanalgorithms/*.lean.cs 等）Roslyn 编译加载；仓内 algorithms/ 只是策略源存档
+       （部署时拷入实例目录 labs/leanalgorithms/）。 -->
+  <ItemGroup>
+    <!-- 引擎 ILogger → console（AddLogging + ConsoleLoggerProvider） -->
+    <PackageReference Include="Microsoft.Extensions.Logging.Console" Version="10.0.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- 登录/交易/行情：官方 SDK 链路（本地仿真前置 tcp://127.0.0.1:17801/17802 或真实前置同链路） -->
+    <ProjectReference Include="..\..\ctp-net-client\src\Ctp.Net.Client\Ctp.Net.Client.csproj" />
+    <!-- JSON-RPC 薄客户端（交易所直连旁路——直跑模式的启动清场用：CTP 线协议查报单恒超时不可用） -->
+    <ProjectReference Include="..\..\aether-exchange\src\Aether.Exchange.Rpc\Aether.Exchange.Rpc.csproj" />
+    <!-- 实盘策略引擎端口（LiveTradingRuntimeRequest / ILiveTradingRuntime / 笔记源端口） -->
+    <ProjectReference Include="..\..\aether-trading\src\Aether.Trading.Runtime.Domain\Aether.Trading.Runtime.Domain.csproj" />
+    <!-- Lean 实盘引擎 impl（AddTradingRuntimeLean / AddLeanAlgorithmServices / LeanAlgorithmRegistry） -->
+    <ProjectReference Include="..\..\aether-trading\src\Aether.Trading.Runtime.Lean\Aether.Trading.Runtime.Lean.csproj" />
+    <!-- IStrategy 壳引擎的脚本加载（AddTradingScripting / StrategyRegistry） -->
+    <ProjectReference Include="..\..\aether-trading\src\Aether.Trading.Scripting\Aether.Trading.Scripting.csproj" />
+  </ItemGroup>
+
+  <!-- libctp_native.dylib 的 @rpath 依赖三个 macOS frameworks（thosttraderapi_se/thostmduserapi_se/MacDataCollect）——
+       ctp-net-core 的 Content 只带 build/native 的 dylib/so/dll，frameworks 不在其中；
+       dyld 载入时全部链接镜像即解析，缺一个就 DllNotFoundException。构建后复制到输出目录
+       （cp -R 保留 frameworks 的 Versions/A symlink 结构；重复执行为幂等合并覆盖）。
+       同款 target 镜像自 monorepo Acme.Ctp.Console.csproj。 -->
+  <PropertyGroup>
+    <CtpSdkDir>$(MSBuildThisFileDirectory)../../ctp-net-core/ctp-sdk/macos-universal</CtpSdkDir>
+  </PropertyGroup>
+  <Target Name="CopyCtpMacFrameworks" AfterTargets="Build" Condition="$([MSBuild]::IsOSPlatform('OSX'))">
+    <Message Importance="high" Text="复制 CTP macOS frameworks → $(OutDir)" />
+    <Exec Command='cp -R "$(CtpSdkDir)/thosttraderapi_se.framework" "$(OutDir)"' />
+    <Exec Command='cp -R "$(CtpSdkDir)/thostmduserapi_se.framework" "$(OutDir)"' />
+    <Exec Command='cp -R "$(CtpSdkDir)/MacDataCollect.framework" "$(OutDir)"' />
+  </Target>
+
+</Project>
