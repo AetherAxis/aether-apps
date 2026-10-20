@@ -1,0 +1,120 @@
+name: Deploy CTP Console
+
+# CTP console 算法 bot 部署（AetherAxis 拆仓版，2026-10-20——自 monorepo deploy-ctp-console.yml 迁移改造）：
+# 形态 = **一个目录一个完整实例**：C:\Aether\ctp-console\publish\ 是程序本体（每次部署整替换）；
+# C:\Aether\ctp-console\<实例名>\ 是运行实例（config.json + labs + ctp.db + lean-algo-cache）——
+# 实例 config.json **永不被部署覆盖**（密码在里面）；labs\leanalgorithms 每次部署覆盖拷贝
+#（algorithms/ 仓库分发副本是权威）。无 Windows 服务——部署不停任何进程，新实例启动用新程序。
+# 与 monorepo 版差异：
+#   - Lean 从 submodule 源码改为 NuGet 包（QuantConnect.Lean.Engine）——不再需要 init submodules
+#   - LeanData 最小子集从 aether-trading 仓取（monorepo 时代走 externals/Lean/Data）
+#   - 触发仅 workflow_dispatch（多仓 paths 联动已断——依赖仓 ⑥⑦③②④① 改动后需手动 Run）
+# Secrets：与 deploy-ctpsim.yml 同一套 CTPSIM_SSH_*（同台服务器）。
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: ctp-console-deploy      # 部署换文件有状态，两个 run 不许交错
+  cancel-in-progress: false
+
+env:
+  # 服务器上的部署中转目录——与 scripts/ctp-console-remote-deploy.ps1 的 $StagingDir 默认值同值常量，改一处须同步另一处
+  CTP_CONSOLE_STAGING: 'C:/Aether/ctp-console-staging'
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        path: aether-apps
+    - uses: actions/checkout@v4
+      with:
+        repository: AetherAxis/aether-exchange
+        path: aether-exchange
+    - uses: actions/checkout@v4
+      with:
+        repository: AetherAxis/aether-ledger
+        path: aether-ledger
+    - uses: actions/checkout@v4
+      with:
+        repository: AetherAxis/ctp-net-contracts
+        path: ctp-net-contracts
+    - uses: actions/checkout@v4
+      with:
+        repository: AetherAxis/ctp-net-core
+        path: ctp-net-core
+    - uses: actions/checkout@v4
+      with:
+        repository: AetherAxis/ctp-net-front
+        path: ctp-net-front
+    - uses: actions/checkout@v4
+      with:
+        repository: AetherAxis/ctp-net-client
+        path: ctp-net-client
+    - uses: actions/checkout@v4
+      with:
+        repository: AetherAxis/aether-trading
+        path: aether-trading
+
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: '10.0.x'
+
+    - name: Publish (self-contained win-x64)
+      run: |
+        dotnet publish Aether.CtpConsole -c Release --self-contained true --runtime win-x64 -o ./publish/console
+      working-directory: aether-apps
+
+    - name: Bundle (LeanData 最小子集 + labs 算法模板 + 实例 config 模板 + VERSION stamp + tar)
+      run: |
+        # LeanData 最小子集（Lean 引擎 handler 装配必需——LiveTradingRealTimeHandler 装配缺它会
+        # DirectoryNotFoundException，monorepo 时代 2026-10-12 实测踩中）：源 aether-trading/LeanData
+        #（随 aether-trading 仓分发；打包回退 <exe>/LeanData——BacktestEnvironment 的设计）
+        mkdir -p aether-apps/publish/console/LeanData/market-hours aether-apps/publish/console/LeanData/symbol-properties
+        cp -r aether-trading/LeanData/market-hours/. aether-apps/publish/console/LeanData/market-hours/
+        cp -r aether-trading/LeanData/symbol-properties/. aether-apps/publish/console/LeanData/symbol-properties/
+        # labs 模板：算法笔记的仓库分发副本（远端部署覆盖拷贝进实例目录——algorithms/ 是权威）
+        mkdir -p aether-apps/publish/console/labs/leanalgorithms
+        cp aether-apps/algorithms/*.lean.cs aether-apps/publish/console/labs/leanalgorithms/
+        # 实例 config 模板（预填默认凭据——**账户名 = 密码**，服务器本机前置 127.0.0.1——部署后
+        # 远端脚本拷进不存在的实例目录 = 开箱即跑；实例 config.json 已存在则永不被覆盖（用户改过的密保留）。
+        # 注意公网开放 + 默认弱口令：登录失败 5 次锁 60s（交易所防爆破），想改密直接编辑实例 config.json）
+        for inst in botmm botnoise; do
+          printf '{"defaultProfile":"%s","labs":null,"data":null,"profiles":{"%s":{"front":"tcp://127.0.0.1:17801","mdFront":"tcp://127.0.0.1:17802","user":"%s","password":"%s","broker":"9999","appId":"simnow_client_test","authCode":"0000000000000000"}}}' \
+            "$inst" "$inst" "$inst" "$inst" > "aether-apps/publish/console/config.$inst.json"
+        done
+        git -C aether-apps rev-parse --short HEAD > aether-apps/publish/console/VERSION
+        # tar 根 = publish/console 的**内容**（-C publish/console .）——解压到 $Root\publish 后
+        # 直接是 exe/labs/VERSION（monorepo 时代实测：多套一层目录会让远端 Copy-Item 找不到路径）
+        tar -czf ctp-console.tar.gz -C aether-apps/publish/console .
+
+    - name: Setup SSH key
+      env:
+        SSH_KEY: ${{ secrets.CTPSIM_SSH_KEY }}
+      run: |
+        install -m 700 -d ~/.ssh
+        printf '%s\n' "$SSH_KEY" > ~/.ssh/ctpsim_key
+        chmod 600 ~/.ssh/ctpsim_key
+
+    - name: Upload (tar + deploy script -> staging)
+      env:
+        SSH_HOST: ${{ secrets.CTPSIM_SSH_HOST }}
+        SSH_USER: ${{ secrets.CTPSIM_SSH_USER }}
+        SSH_PORT: ${{ secrets.CTPSIM_SSH_PORT }}
+      run: |
+        scp -i ~/.ssh/ctpsim_key -o StrictHostKeyChecking=accept-new -P "${SSH_PORT:-22}" \
+          ctp-console.tar.gz aether-apps/scripts/ctp-console-remote-deploy.ps1 "${SSH_USER}@${SSH_HOST}:${CTP_CONSOLE_STAGING}/"
+
+    - name: Deploy (swap publish -> ensure instances; no services to restart)
+      env:
+        SSH_HOST: ${{ secrets.CTPSIM_SSH_HOST }}
+        SSH_USER: ${{ secrets.CTPSIM_SSH_USER }}
+        SSH_PORT: ${{ secrets.CTPSIM_SSH_PORT }}
+      run: |
+        ssh -i ~/.ssh/ctpsim_key -o StrictHostKeyChecking=accept-new -p "${SSH_PORT:-22}" \
+          "${SSH_USER}@${SSH_HOST}" \
+          "powershell -NoProfile -ExecutionPolicy Bypass -File ${CTP_CONSOLE_STAGING}/ctp-console-remote-deploy.ps1"
+        # Windows OpenSSH 默认 shell 是 cmd.exe——显式起 powershell 跑脚本；这是唯一远程命令，零嵌套引号

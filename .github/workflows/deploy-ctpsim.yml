@@ -1,0 +1,118 @@
+name: Deploy CTP Sim Stack
+
+# CTP 仿真栈两服务部署（AetherAxis 拆仓版，2026-10-20——自 monorepo deploy-ctpsim.yml 迁移改造）：
+#   AetherCtpExchange = 交易所（Aether.Exchange.Host：撮合核心 + JSON-RPC 127.0.0.1:17800）
+#   AetherCtpFront    = 前置（Aether.CtpFront.Host：CTP 线协议双腿 17801/17802 → RPC 连交易所）
+# 与 monorepo 版差异：
+#   - 代码在 8 个独立仓——checkout self + 全部兄弟仓（跨仓 ProjectReference 同 CI 拓扑），publish 闭包自然满足
+#   - 触发仅 workflow_dispatch：多仓下 paths 联动已断（依赖仓 ④⑤①③ 的改动不会触发本 workflow）——
+#     **依赖仓有改动 push 后，需手动 Run workflow 部署**；本仓宿主/scripts 改动也建议手动触发
+#   - 服务器端零改动：服务名/部署目录/staging/env/防火墙沿用 ctpsim-setup-server.ps1 的既有约定；
+#     exe 改名由远端脚本步骤 4.5 幂等自愈（sc.exe config binPath）
+# Secrets（在本仓 Settings → Secrets and variables → Actions 配置，与 monorepo 同名同值）：
+#   CTPSIM_SSH_HOST / CTPSIM_SSH_USER（Administrators 组）/ CTPSIM_SSH_KEY / 可选 CTPSIM_SSH_PORT
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: ctpsim-deploy      # SSH 部署有状态（停服务/换文件），两个 run 不许交错
+  cancel-in-progress: false
+
+env:
+  # 服务器上的部署中转目录——与 scripts/ctpsim-remote-deploy.ps1 的 $StagingDir 默认值是同值常量，改一处须同步另一处
+  CTPSIM_STAGING: 'C:/Aether/ctpsim-tmp'
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        path: aether-apps
+    - uses: actions/checkout@v4
+      with:
+        repository: AetherAxis/aether-exchange
+        path: aether-exchange
+    - uses: actions/checkout@v4
+      with:
+        repository: AetherAxis/aether-ledger
+        path: aether-ledger
+    - uses: actions/checkout@v4
+      with:
+        repository: AetherAxis/ctp-net-contracts
+        path: ctp-net-contracts
+    - uses: actions/checkout@v4
+      with:
+        repository: AetherAxis/ctp-net-core
+        path: ctp-net-core
+    - uses: actions/checkout@v4
+      with:
+        repository: AetherAxis/ctp-net-front
+        path: ctp-net-front
+    - uses: actions/checkout@v4
+      with:
+        repository: AetherAxis/ctp-net-client
+        path: ctp-net-client
+    - uses: actions/checkout@v4
+      with:
+        repository: AetherAxis/aether-trading
+        path: aether-trading
+
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: '10.0.x'
+
+    - name: Publish (both hosts, self-contained win-x64)
+      run: |
+        dotnet publish Aether.Exchange.Host -c Release --self-contained true --runtime win-x64 -o ./publish/exchange
+        dotnet publish Aether.CtpFront.Host -c Release --self-contained true --runtime win-x64 -o ./publish/front
+      working-directory: aether-apps
+
+    - name: Bundle (VERSION stamp + tar)
+      run: |
+        git -C aether-apps rev-parse --short HEAD > aether-apps/publish/exchange/VERSION
+        cp aether-apps/publish/exchange/VERSION aether-apps/publish/front/VERSION
+        tar -czf ctpsim.tar.gz -C aether-apps/publish .
+
+    - name: Setup SSH key
+      env:
+        SSH_KEY: ${{ secrets.CTPSIM_SSH_KEY }}
+      run: |
+        install -m 700 -d ~/.ssh
+        printf '%s\n' "$SSH_KEY" > ~/.ssh/ctpsim_key
+        chmod 600 ~/.ssh/ctpsim_key
+
+    - name: Upload (tar + deploy script -> staging)
+      env:
+        SSH_HOST: ${{ secrets.CTPSIM_SSH_HOST }}
+        SSH_USER: ${{ secrets.CTPSIM_SSH_USER }}
+        SSH_PORT: ${{ secrets.CTPSIM_SSH_PORT }}
+      run: |
+        scp -i ~/.ssh/ctpsim_key -o StrictHostKeyChecking=accept-new -P "${SSH_PORT:-22}" \
+          ctpsim.tar.gz aether-apps/scripts/ctpsim-remote-deploy.ps1 "${SSH_USER}@${SSH_HOST}:${CTPSIM_STAGING}/"
+
+    - name: Deploy (stop both -> swap both -> fix binPath -> start exchange -> start front)
+      env:
+        SSH_HOST: ${{ secrets.CTPSIM_SSH_HOST }}
+        SSH_USER: ${{ secrets.CTPSIM_SSH_USER }}
+        SSH_PORT: ${{ secrets.CTPSIM_SSH_PORT }}
+      run: |
+        ssh -i ~/.ssh/ctpsim_key -o StrictHostKeyChecking=accept-new -p "${SSH_PORT:-22}" \
+          "${SSH_USER}@${SSH_HOST}" \
+          "powershell -NoProfile -ExecutionPolicy Bypass -File ${CTPSIM_STAGING}/ctpsim-remote-deploy.ps1"
+        # Windows OpenSSH 默认 shell 是 cmd.exe——显式起 powershell 跑脚本；这是唯一远程命令，零嵌套引号
+
+    - name: Health check (best-effort TCP 17801 on the front)
+      env:
+        SSH_HOST: ${{ secrets.CTPSIM_SSH_HOST }}
+      run: |
+        for i in 1 2 3; do
+          if timeout 5 bash -c "echo > /dev/tcp/${SSH_HOST}/17801"; then
+            echo "TCP 17801 OK"
+            exit 0
+          fi
+          sleep 5
+        done
+        echo "::warning::TCP 17801 探测失败（远程脚本已断言两服务 Running；可能 NAT/上游防火墙挡了 GitHub runner 的直达）"
