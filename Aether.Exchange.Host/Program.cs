@@ -17,8 +17,8 @@ using Microsoft.Extensions.Hosting;
 //                          只服务前置进程（同机 127.0.0.1 即可；服务器部署脚本即此默认，17800 无需对外）
 //   AETHER_CTP_SIM_DB      账本库路径（默认 ~/.aether/ctp-sim.db；与真实 ctp.db 分文件）
 //   AETHER_CTP_SIM_BALANCE 新账户初始资金
-//   AETHER_CTP_SIM_BOARD   上市合约表（逗号分隔合约号；默认 zx001——「我就是交易所」的自有品种（2 字母官方命名合规），
-//                          自定义 id 经 解析链：精确→品种派生→合成 兜底；坏值容忍回默认）
+//   AETHER_CTP_SIM_BOARD   上市合约表（逗号分隔合约号；默认 ax001——Aether 币价期货，
+//                          交易所自有品种，非真实期货；自定义 id 经 解析链：精确→品种派生→合成 兜底；坏值容忍回默认）
 //   AETHER_CTP_SIM_LOGIN_MAX_FAILURES / AETHER_CTP_SIM_LOGIN_LOCKOUT_SEC  防爆破（登录锁定）
 //   AETHER_CTP_SIM_LOG     日志文件路径（默认空=仅控制台；Windows 服务形态部署时由 setup 脚本设置）
 //

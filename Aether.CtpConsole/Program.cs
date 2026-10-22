@@ -163,7 +163,7 @@ if (args.FirstOrDefault(a => a.Equals("--run-strategy", StringComparison.Ordinal
     passThrough.AddRange(instruments);
     // 其余 -- 选项（--real/--max-volume/--engine/--resolution/--param/--verbose/--cash）原样透传给 StrategyRunAsync。
     // 控制台级参数（--config/--labs/--data/--profile/--exchange）不透传——旧版把它们连值一起当合约
-    // （合约=zx001,--exchange,117.72.186.128:17800——2026-10-20 实测踩中；用法注释尾部的 [--exchange] 照抄必踩）
+    // （合约,--exchange,117.72.186.128:17800——2026-10-20 实测踩中；用法注释尾部的 [--exchange] 照抄必踩）
     var consoleKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "config", "labs", "data", "profile", "exchange" };
     var skipValue = false;
     foreach (var a in args.Skip(rsIdx + 1).Skip(1 + instruments.Count))
