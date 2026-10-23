@@ -1,15 +1,28 @@
 <Project>
   <PropertyGroup>
     <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
+    <!-- 组合根按拓扑引兄弟仓（⑥ 交易运行时 → Lean），Lean 的 nuspec 会把 2018 年的旧系统包带进每个宿主的
+         还原图。这里与 ⑥ aether-trading 保持同一组传递钉（两仓都必须各钉一份：NuGet 审计按项目还原图算，
+         不会因为「上游 project reference 已钉」就放过本仓）。 -->
+    <CentralPackageTransitivePinningEnabled>true</CentralPackageTransitivePinningEnabled>
   </PropertyGroup>
   <ItemGroup>
-    <PackageVersion Include="Microsoft.Extensions.Hosting" Version="10.0.10" />
-    <PackageVersion Include="Microsoft.Extensions.Hosting.WindowsServices" Version="10.0.10" />
-    <PackageVersion Include="Microsoft.Extensions.Logging.Console" Version="10.0.10" />
+    <PackageVersion Include="Microsoft.Extensions.Hosting" Version="10.0.13" />
+    <PackageVersion Include="Microsoft.Extensions.Hosting.WindowsServices" Version="10.0.13" />
+    <PackageVersion Include="Microsoft.Extensions.Logging.Console" Version="10.0.13" />
+
+    <!-- 传递漏洞钉（同 ⑥ aether-trading）：
+         GHSA-6xh7-4v2w-36q6 / GHSA-jc8g-xhw5-6x46 / GHSA-p9wx-v264-q34p / GHSA-rxg9-xrhp-64gj / GHSA-555c-2p6r-68mm -->
+    <PackageVersion Include="System.Private.ServiceModel" Version="4.10.3" />
+    <PackageVersion Include="System.ServiceModel.Primitives" Version="4.10.3" />
+    <PackageVersion Include="System.Net.Http.WinHttpHandler" Version="4.7.2" />
+    <PackageVersion Include="System.Drawing.Common" Version="4.7.3" />
+    <PackageVersion Include="System.Security.Cryptography.Pkcs" Version="6.0.5" />
+
     <!-- 测试 -->
-    <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
+    <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="18.11.0" />
     <PackageVersion Include="xunit" Version="2.9.3" />
-    <PackageVersion Include="xunit.runner.visualstudio" Version="3.1.4" />
-    <PackageVersion Include="coverlet.collector" Version="6.0.4" />
+    <PackageVersion Include="xunit.runner.visualstudio" Version="4.0.1" />
+    <PackageVersion Include="coverlet.collector" Version="10.1.0" />
   </ItemGroup>
 </Project>

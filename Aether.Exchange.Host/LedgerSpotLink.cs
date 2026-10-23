@@ -57,7 +57,7 @@ public sealed class LedgerSpotLink : ILedgerWithdrawHook, IDisposable
         uint asset = LedgerSupply.Assets.Quote, CancellationToken ct = default)
     {
         if (asset != LedgerSupply.Assets.Quote)
-            return Task.FromResult((false, "币通道已退役（2026-10-10 拆除——交易所只收付计价币 AQ；coin 留在链上钱包）"));
+            return Task.FromResult<(bool Ok, string? Error)>((false, "币通道已退役（2026-10-10 拆除——交易所只收付计价币 AQ；coin 留在链上钱包）"));
         try
         {
             _core.WithdrawQuoteCash(accountKey, amountAtoms);
@@ -65,7 +65,7 @@ public sealed class LedgerSpotLink : ILedgerWithdrawHook, IDisposable
         }
         catch (ExchangeBusinessException ex)
         {
-            return Task.FromResult((false, ex.ErrorMsg));
+            return Task.FromResult<(bool Ok, string? Error)>((false, ex.ErrorMsg));
         }
     }
 

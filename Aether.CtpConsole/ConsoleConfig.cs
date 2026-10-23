@@ -38,7 +38,9 @@ public sealed class ConsoleConfig
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         // 600：含密码——仅属主可读写（Windows 无此 API 语义，忽略异常）
         File.WriteAllText(path, JsonSerializer.Serialize(this, JsonOptions));
-        try { File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite); } catch { }
+        // Windows 没有 Unix 权限位语义，API 直接抛 PlatformNotSupported——先判平台再收紧。
+        if (!OperatingSystem.IsWindows())
+            try { File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite); } catch { }
     }
 
     /// <summary>生成模板（首次启动无配置时）：带示例档案（占位凭据）+ 全字段说明。</summary>
