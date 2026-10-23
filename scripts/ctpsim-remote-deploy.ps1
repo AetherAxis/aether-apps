@@ -3,8 +3,9 @@
 #   powershell -NoProfile -ExecutionPolicy Bypass -File C:/Aether/ctpsim-tmp/ctpsim-remote-deploy.ps1
 # 两服务形态（2026-10-05 进程分离）：AetherCtpExchange（交易所）+ AetherCtpFront（前置）。
 # 前提（一次性）：已以管理员运行 scripts/ctpsim-setup-server.ps1（两服务 + env 注册表 + 防火墙）。
-# 流程：preflight → 干净解包 → 停前置再停交易所 → 清部署目录残留进程 → robocopy /MIR 两目录 → 起交易所（等 Running）
-#       → 起前置（等 Running）→ 汇报。兼容 Windows PowerShell 5.1（无 ?? / 三元 / &&）。
+# 流程：preflight → 干净解包 → 停前置再停交易所 → 清部署目录残留进程 → robocopy /MIR 两目录
+#       → 钉定服务 env（交易所监听 / 前置上游地址）→ 起交易所（等 Running）→ 起前置（等 Running）→ 汇报。
+# 兼容 Windows PowerShell 5.1（无 ?? / 三元 / &&）。
 # 注意：参数默认值与 workflow 的 env.CTPSIM_STAGING / setup 脚本的目录约定是同值常量——改一处须同步另一处。
 
 [CmdletBinding()]
@@ -147,6 +148,32 @@ sc.exe config $ExchangeService binPath= (Join-Path $ExchangeDir 'Aether.Exchange
 sc.exe config $FrontService binPath= (Join-Path $FrontDir 'Aether.CtpFront.Host.exe') | Out-Null
 Info "服务 ImagePath 已校正 → $ExchangeDir\Aether.Exchange.Host.exe / $FrontDir\Aether.CtpFront.Host.exe"
 
+# 4.6) 服务环境变量钉定（幂等）：每次部署把监听/上游地址写成期望值，消除「服务器上那份 env 与仓里不一致」
+#      这类只有到现场才发现的漂移。2026-10-24 现场症状：交易所仍只听 127.0.0.1，前置却配着公网 IP
+#      去连自己 → 17801/17802 正常、任何登录都回 90012「无法连接：Connection refused」，从外部看
+#      跟「交易所没开」完全一样。
+#      Windows 服务环境变量 = 服务注册表键的 Environment (REG_MULTI_SZ)；只在服务停止时改、随本次启动生效。
+#      只覆盖下面显式列出的项，其余既有项（custody seed / 日志路径 / 上市合约表 / 初始资金 / 防爆破）原样保留。
+#      注：交易所绑 0.0.0.0 是为了让外部前置（本地调试）能直连；RPC 只暴露给 CTP 前置的接入面，
+#      仍然要登录鉴权——若只想本机用，把 AETHER_CTP_SIM_ADDR 改回 127.0.0.1:17800 即可。
+function Set-ServiceEnv([string]$svc, [hashtable]$wanted) {
+    $key = "HKLM:\SYSTEM\CurrentControlSet\Services\$svc"
+    $current = Get-ItemProperty -Path $key -Name Environment -ErrorAction SilentlyContinue
+    $map = @{}
+    if ($current -and $current.Environment) {
+        foreach ($line in @($current.Environment)) {
+            if ($line -match '^([^=]+)=(.*)$') { $map[$matches[1]] = $matches[2] }
+        }
+    }
+    foreach ($k in $wanted.Keys) { $map[$k] = $wanted[$k] }
+    $merged = @()
+    foreach ($k in ($map.Keys | Sort-Object)) { $merged += "$k=$($map[$k])" }
+    New-ItemProperty -Path $key -Name Environment -PropertyType MultiString -Value ([string[]]$merged) -Force | Out-Null
+    Info "$svc 环境：$($merged -join ' | ')"
+}
+Set-ServiceEnv $ExchangeService @{ 'AETHER_CTP_SIM_ADDR' = '0.0.0.0:17800' }
+Set-ServiceEnv $FrontService @{ 'AETHER_CTP_EXCHANGE_ADDR' = '127.0.0.1:17800' }
+
 # 5) 起交易所（等 Running——前置探活会自动连上）；再起前置（等 Running）。
 #    Start-Service 失败（1053 超时 / 进程即崩）不在此抛——吞掉进等待循环，统一走 DumpStartFailure 诊断收尾
 #    （2026-10-06 实测：$ErrorActionPreference=Stop 下 Start-Service 直接抛会把诊断输出全部短路掉，CI 只剩一句 mojibake）。
@@ -174,4 +201,8 @@ $version = Get-Content (Join-Path $FrontDir 'VERSION') -ErrorAction SilentlyCont
 Write-Host "[CTPSIM-DEPLOY] ==> $ExchangeService + $FrontService 已部署并运行（版本 $version）"
 Write-Host "[CTPSIM-DEPLOY]     日志: $DataDir\ctpsim-exchange.log / ctpsim-front.log    账本: $DataDir\ctp-sim.db"
 Write-Host "[CTPSIM-DEPLOY]     客户端前置: tcp://<本机IP>:17801（交易）/ tcp://<本机IP>:17802（行情）"
+# 实际绑定面回读：env 写对了不等于进程听对了（端口被占/绑错地址都会让「服务 Running」与「端口不可用」同时成立）。
+$listen = (netstat -ano | findstr ':17800' | Select-String 'LISTENING' | Select-Object -First 1)
+if ($listen) { Write-Host "[CTPSIM-DEPLOY]     交易所监听: $($listen.Line.Trim())" }
+else { Write-Host "[CTPSIM-DEPLOY]     ⚠ 未见 :17800 LISTENING —— 交易所可能未绑定成功，看 ctpsim-exchange.log" }
 exit 0

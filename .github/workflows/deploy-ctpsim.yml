@@ -7,8 +7,11 @@ name: Deploy CTP Sim Stack
 #   - 代码在 8 个独立仓——checkout self + 全部兄弟仓（跨仓 ProjectReference 同 CI 拓扑），publish 闭包自然满足
 #   - 触发仅 workflow_dispatch：多仓下 paths 联动已断（依赖仓 ④⑤①③ 的改动不会触发本 workflow）——
 #     **依赖仓有改动 push 后，需手动 Run workflow 部署**；本仓宿主/scripts 改动也建议手动触发
-#   - 服务器端零改动：服务名/部署目录/staging/env/防火墙沿用 ctpsim-setup-server.ps1 的既有约定；
+#   - 服务器端零改动：服务名/部署目录/staging/防火墙沿用 ctpsim-setup-server.ps1 的既有约定；
 #     exe 改名由远端脚本步骤 4.5 幂等自愈（sc.exe config binPath）
+#   - 服务 env 由远端脚本步骤 4.6 每次部署钉定（不再只靠 setup 时的一次性配置）：
+#     交易所 AETHER_CTP_SIM_ADDR=0.0.0.0:17800（外部前置可直连）、前置 AETHER_CTP_EXCHANGE_ADDR=127.0.0.1:17800
+#     ——2026-10-24 现场：两者漂移成「交易所只听回环 + 前置走公网 IP 连自己」，表现为登录全 90012
 # Secrets（在本仓 Settings → Secrets and variables → Actions 配置，与 monorepo 同名同值）：
 #   CTPSIM_SSH_HOST / CTPSIM_SSH_USER（Administrators 组）/ CTPSIM_SSH_KEY / 可选 CTPSIM_SSH_PORT
 
