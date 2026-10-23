@@ -483,6 +483,15 @@ async Task WaitBotExitAsync()
         HostLog.Line("[bot] 收到 Ctrl+C——优雅停止…");
         exit.TrySetResult();
     };
+    // 停服 / ssh 断开送的是 SIGTERM，不经过 CancelKeyPress。只挂后者会让这些场景
+    // 直接终止进程、跳过撤单腿——挂单留在交易所里。SIGINT 仍由 CancelKeyPress 负责，避免双重注册。
+    using var sigterm = System.Runtime.InteropServices.PosixSignalRegistration.Create(
+        System.Runtime.InteropServices.PosixSignal.SIGTERM, ctx =>
+        {
+            ctx.Cancel = true;
+            HostLog.Line("[bot] 收到 SIGTERM——优雅停止…");
+            exit.TrySetResult();
+        });
     _ = Task.Run(async () =>
     {
         while (!exit.Task.IsCompleted)

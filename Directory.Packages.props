@@ -12,10 +12,10 @@
     <PackageVersion Include="Microsoft.Extensions.Logging.Console" Version="10.0.13" />
 
     <!-- 传递漏洞钉（同 ⑥ aether-trading）：
-         GHSA-6xh7-4v2w-36q6 / GHSA-jc8g-xhw5-6x46 / GHSA-p9wx-v264-q34p / GHSA-rxg9-xrhp-64gj / GHSA-555c-2p6r-68mm -->
+         GHSA-jc8g-xhw5-6x46 / GHSA-p9wx-v264-q34p / GHSA-rxg9-xrhp-64gj / GHSA-555c-2p6r-68mm
+         （System.Net.Http.WinHttpHandler 曾一并钉过，但 net10.0 还原图里根本没有它——已移除，避免「假装修过」） -->
     <PackageVersion Include="System.Private.ServiceModel" Version="4.10.3" />
     <PackageVersion Include="System.ServiceModel.Primitives" Version="4.10.3" />
-    <PackageVersion Include="System.Net.Http.WinHttpHandler" Version="4.7.2" />
     <PackageVersion Include="System.Drawing.Common" Version="4.7.3" />
     <PackageVersion Include="System.Security.Cryptography.Pkcs" Version="6.0.5" />
 

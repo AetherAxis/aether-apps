@@ -58,7 +58,7 @@ foreach ($name in $Instances) {
 }
 
 # 3) 状态清单
-$running = Get-Process Acme.Ctp.Console -ErrorAction SilentlyContinue
+$running = Get-Process Aether.CtpConsole -ErrorAction SilentlyContinue
 if ($running) {
     Info "正在运行的实例进程：$($running.Count) 个（继续用旧内存程序；重启后用新版本）"
 } else {
@@ -66,4 +66,4 @@ if ($running) {
 }
 $version = Get-Content (Join-Path $Root 'publish\VERSION') -ErrorAction SilentlyContinue
 Info "部署完成：publish 版本 $version"
-Info "启动方式：cd $Root\botmm ; ..\publish\Acme.Ctp.Console.exe"
+Info "启动方式：cd $Root\botmm ; ..\publish\Aether.CtpConsole.exe"

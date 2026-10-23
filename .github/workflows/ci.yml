@@ -66,6 +66,22 @@ jobs:
         run: dotnet build Aether.Apps.slnx -c Release
         working-directory: aether-apps
 
+      # 依赖审计：组合根会把 ⑥ Lean 的传递依赖一并拉进来，钉版本是本仓自己的责任
+      # （NuGet 审计按项目还原图算，不因为上游 project reference 已钉就放过本仓）。
+      # 允许清单：DotNetZip 1.16.0（GHSA-xhg6-9j5j-w4vf）——最后一版，上游停维护，来自 QuantConnect.Compression。
+      - name: NuGet audit
+        run: |
+          dotnet package list --vulnerable --include-transitive > /tmp/audit.txt
+          cat /tmp/audit.txt
+          grep -E '^[[:space:]]+> ' /tmp/audit.txt \
+            | grep -vi 'GHSA-xhg6-9j5j-w4vf' > /tmp/audit-bad.txt || true
+          if [ -s /tmp/audit-bad.txt ]; then
+            echo "::error::发现未在允许清单中的已知漏洞依赖："
+            cat /tmp/audit-bad.txt
+            exit 1
+          fi
+        working-directory: aether-apps
+
       # 2026-10-23 迁入测试：2 例 = algorithms/ 交易所 bot 策略源（market-maker/noise-taker）对 Runtime.Lean 编译器的锁定。
       - name: Test
         run: dotnet test Aether.Apps.slnx -c Release --no-build
