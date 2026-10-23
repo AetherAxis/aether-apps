@@ -3,7 +3,7 @@
 #   powershell -NoProfile -ExecutionPolicy Bypass -File C:/Aether/ctpsim-tmp/ctpsim-remote-deploy.ps1
 # 两服务形态（2026-10-05 进程分离）：AetherCtpExchange（交易所）+ AetherCtpFront（前置）。
 # 前提（一次性）：已以管理员运行 scripts/ctpsim-setup-server.ps1（两服务 + env 注册表 + 防火墙）。
-# 流程：preflight → 干净解包 → 停前置再停交易所 → robocopy /MIR 两目录 → 起交易所（等 Running）
+# 流程：preflight → 干净解包 → 停前置再停交易所 → 清部署目录残留进程 → robocopy /MIR 两目录 → 起交易所（等 Running）
 #       → 起前置（等 Running）→ 汇报。兼容 Windows PowerShell 5.1（无 ?? / 三元 / &&）。
 # 注意：参数默认值与 workflow 的 env.CTPSIM_STAGING / setup 脚本的目录约定是同值常量——改一处须同步另一处。
 
@@ -89,11 +89,55 @@ foreach ($svc in @($FrontService, $ExchangeService)) {
     }
 }
 
+# 3.5) 停服兜底：SCM 报 Stopped 之后部署目录里仍可能有进程压着文件（2026-10-24 实测：两服务都已 Stopped，
+#      robocopy 仍对整目录报 ERROR 32「文件正被另一进程使用」，交易所部署中断）。来源是 SCM 管不到的进程——
+#      RDP 里手工起过同一个 exe，或上一次部署半途失败留下的孤儿。按「映像路径落在部署目录内」精确识别：
+#      只结束自己人，不碰机器上其它进程（同名但不在部署目录的实例不认）。
+function Get-ProcessInDir([string]$dir) {
+    if (-not (Test-Path $dir)) { return @() }
+    $full = (Resolve-Path $dir).Path.TrimEnd('\') + '\'
+    $hits = @()
+    foreach ($p in (Get-Process -ErrorAction SilentlyContinue)) {
+        $path = $null
+        try { $path = $p.Path } catch { }   # 无权限读 Path 的进程直接跳过（不是我们的）
+        if ($path -and $path.StartsWith($full, [StringComparison]::OrdinalIgnoreCase)) { $hits += $p }
+    }
+    $hits
+}
+
+function Clear-LingeringProcesses([string]$dir, [string]$label) {
+    $procs = @(Get-ProcessInDir $dir)
+    if ($procs.Count -eq 0) { return }
+    $names = ($procs | ForEach-Object { "$($_.ProcessName)($($_.Id))" }) -join ', '
+    Info "$label 目录仍有进程占用（$names）——SCM 已停，按孤儿进程处理：结束"
+    foreach ($p in $procs) { try { $p.Kill() } catch { } }
+    $deadline = [DateTime]::Now.AddSeconds(15)
+    while ([DateTime]::Now -lt $deadline) {
+        if (@(Get-ProcessInDir $dir).Count -eq 0) {
+            Info "$label 目录已无进程占用"
+            return
+        }
+        Start-Sleep -Milliseconds 300
+    }
+    Fail "$label 目录仍有进程占用（$names）15s 内未退出——手工结束后重跑部署"
+}
+
 # 4) 换文件：robocopy /MIR（退出码 0-7 都是成功，>=8 才失败）。账本与日志在 DataDir（两部署目录之外）。
-robocopy (Join-Path $out 'exchange') $ExchangeDir /MIR /R:2 /W:2 /NFL /NDL /NJH /NJS
-if ($LASTEXITCODE -ge 8) { Fail "robocopy 交易所失败（code $LASTEXITCODE）" }
-robocopy (Join-Path $out 'front') $FrontDir /MIR /R:2 /W:2 /NFL /NDL /NJH /NJS
-if ($LASTEXITCODE -ge 8) { Fail "robocopy 前置失败（code $LASTEXITCODE）——交易所已更新，重跑一次部署即可恢复" }
+#    失败时先清掉刚冒出来的占用进程再重试（杀进程与句柄释放之间有间隙，单次重试不够）。
+function Copy-DeployDir([string]$src, [string]$dst, [string]$label, [string]$hint) {
+    for ($i = 1; $i -le 3; $i++) {
+        robocopy $src $dst /MIR /R:2 /W:2 /NFL /NDL /NJH /NJS
+        if ($LASTEXITCODE -lt 8) { return }
+        Info "robocopy $label 第 $i 次失败（code $LASTEXITCODE）——清占用后重试"
+        Clear-LingeringProcesses $dst $label
+        Start-Sleep -Seconds 2
+    }
+    Fail "robocopy $label 失败（code $LASTEXITCODE，已重试 3 次）$hint"
+}
+Clear-LingeringProcesses $ExchangeDir '交易所'
+Clear-LingeringProcesses $FrontDir '前置'
+Copy-DeployDir (Join-Path $out 'exchange') $ExchangeDir '交易所' ''
+Copy-DeployDir (Join-Path $out 'front') $FrontDir '前置' '——交易所已更新，重跑一次部署即可恢复'
 
 # 4.5) 服务 ImagePath 自愈（2026-10-20 拆仓切换，幂等）：AetherAxis 独立仓的宿主 exe 改名
 #      （Acme.Ctp.Sim.Host.exe → Aether.Exchange.Host.exe / Acme.Ctp.Front.Host.exe → Aether.CtpFront.Host.exe），
