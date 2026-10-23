@@ -42,6 +42,12 @@ dotnet run --project ~/Desktop/AetherAxis/aether-apps/Aether.CtpConsole \
 - `deploy-ctp-console`：console bot——publish 整替换 + 实例目录形态（实例 config.json 永不覆盖；labs/leanalgorithms 每次覆盖，`algorithms/` 是权威）
 - 均 workflow_dispatch 手动触发：多仓 paths 联动已断——**依赖仓 push 后须手动 Run workflow 重新部署**
 
+## 构建与测试
+
+```bash
+dotnet test Aether.Apps.slnx    # tests/Aether.Apps.Tests：2 例——algorithms/{market-maker,noise-taker}.lean.cs 对 Runtime.Lean 编译器的锁定（策略源与编译验证同仓）
+```
+
 ## 来历
 
 2026-10-19 建为 sim-apps（Front.Host + Sim.Host 验证宿主）；2026-10-20 改名 aether-apps 并归一组合根——吸收 ① aether-ledger 的 LedgerNode/LedgerVerify、新增 CtpConsole 宿主与 algorithms/ 存档。完整决策记录见工作区根 `MIGRATION.md`。
