@@ -12,3 +12,8 @@ obj/
 TestResults/
 *.cobertura.xml
 coverage.*.xml
+
+# 部署打包产物：本地复跑 dotnet publish（同 deploy-ctpsim.yml 的步骤）时落在仓根的
+# publish/{exchange,front} 与 ctpsim.tar.gz——70MB 级二进制，绝不入库
+publish/
+*.tar.gz
