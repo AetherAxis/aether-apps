@@ -129,6 +129,10 @@ public class MarketMakerAlgo : LeanAlgorithmBase
     /// <summary>撤移出带宽或触限的腿。撤单 pending 的腿不重复撤（等终态事件清根）。</summary>
     private void RollStaleLegs(List<OrderTicket> legs, List<decimal> desired, bool capped, string side)
     {
+        // 先挑、后撤（不要边遍历边撤）：leg.Cancel() 可能**同步**派发 OnOrderEvent，终态分支会对
+        // 同一个 legs 做 RemoveAll —— 直接 foreach 就撞「Collection was modified」把引擎打死
+        // （2026-10-24 botmm 实测：RuntimeError → 引擎退出）。
+        var stale = new List<OrderTicket>();
         foreach (var leg in legs)
         {
             if (leg.Status == OrderStatus.CancelPending) continue;
@@ -136,9 +140,10 @@ public class MarketMakerAlgo : LeanAlgorithmBase
             if (capped || !desired.Contains(price))
             {
                 BotLog($"[MM] 撤{side}腿 @{price}（移出带宽/触限）");
-                leg.Cancel();
+                stale.Add(leg);
             }
         }
+        foreach (var leg in stale) leg.Cancel();
     }
 
     /// <summary>
@@ -154,7 +159,10 @@ public class MarketMakerAlgo : LeanAlgorithmBase
             if (legs.Exists(t => t.Get(OrderField.LimitPrice) == price)) continue;
             var volume = Math.Min(_quoteVolume, budget - resting);
             if (volume < 1m) break;
-            legs.Add(LimitOrder(_symbol, isBid ? volume : -volume, price, tag: isBid ? "MM买" : "MM卖"));
+            var ticket = LimitOrder(_symbol, isBid ? volume : -volume, price, tag: isBid ? "MM买" : "MM卖");
+            // 同款重入防护：下单回报可能同步到达并判终态（那时它还没进 legs，OnOrderEvent 的
+            // RemoveAll 扑空）——终态票不要进 legs，否则下一轮会拿死票占位/撤单。
+            if (!ticket.Status.IsClosed()) legs.Add(ticket);
             resting += volume;
             BotLog($"[MM] 挂{(isBid ? "买" : "卖")} {price} × {volume}手（last={_last}）");
         }
