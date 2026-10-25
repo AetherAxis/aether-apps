@@ -41,6 +41,9 @@ public class MarketMakerAlgo : LeanAlgorithmBase
     private int _levels;           // 每侧档数
     private decimal _quoteVolume;  // 单档挂单手数
     private decimal _positionCap;
+    /// <summary>两次重新报价之间的最小墙钟间隔（防「tick → 撤改 → 簿变更 → tick」自激风暴）。</summary>
+    private int _minQuoteIntervalMs;
+    private DateTime _lastQuoteUtc = DateTime.MinValue;
     private readonly List<OrderTicket> _bidLegs = new();
     private readonly List<OrderTicket> _askLegs = new();
 
@@ -52,6 +55,7 @@ public class MarketMakerAlgo : LeanAlgorithmBase
         new StrategyParameterDef("PriceTick", "最小变动价位", "0.01"),
         new StrategyParameterDef("QuoteVolume", "单档挂单手数", "5"),
         new StrategyParameterDef("PositionCap", "单边持仓上限（手）", "200"),
+        new StrategyParameterDef("MinQuoteIntervalMs", "最小重新报价间隔（毫秒，防自激风暴）", "300"),
     };
 
     public override void Initialize()
@@ -65,11 +69,13 @@ public class MarketMakerAlgo : LeanAlgorithmBase
         _levels = GetIntParam("Levels", 5);
         _quoteVolume = GetDecimalParam("QuoteVolume", 5m);
         _positionCap = GetDecimalParam("PositionCap", 200m);
+        _minQuoteIntervalMs = GetIntParam("MinQuoteIntervalMs", 300);
         // 兜底重挂（2026-10-18 36h 长跑定案）：算法纯事件驱动（tick→维护）——撤光/吃光挂单后若市场
         // 完全静止（无挂/撤/成事件 ⇒ 无 tick），「下一数据事件补挂」永不发生 ⇒ 簿空自锁、市场假死
-        // （实测 MM 撤光后 14h 不补挂、NT 吃陈旧价全作废）。定时器独立于行情，保证静止市场也会恢复深度。
-        Schedule.On(DateRules.EveryDay(), TimeRules.Every(TimeSpan.FromSeconds(30)), () => RefreshQuotes());
-        BotLog($"[MM] 初始化 {_symbol.Value}: 上下各{_levels}档 点差{_spreadTicks}tick 档距{_levelStepTicks}tick 单档{_quoteVolume}手 仓限±{_positionCap}");
+        // （实测 MM 撤光后 14h 不补挂、NT 吃陈旧价全作废）。定时器独立于行情，保证静止市场也会恢复深度
+        // （force=true 绕过节流）。
+        Schedule.On(DateRules.EveryDay(), TimeRules.Every(TimeSpan.FromSeconds(30)), () => RefreshQuotes(force: true));
+        BotLog($"[MM] 初始化 {_symbol.Value}: 上下各{_levels}档 点差{_spreadTicks}tick 档距{_levelStepTicks}tick 单档{_quoteVolume}手 仓限±{_positionCap} 最小报价间隔{_minQuoteIntervalMs}ms");
     }
 
     public override void OnData(Slice slice)
@@ -93,11 +99,26 @@ public class MarketMakerAlgo : LeanAlgorithmBase
     }
 
     /// <summary>阶梯维护：超限减仓 → 撤移出带宽/触限腿 → 补缺档（预算感知）。撤单异步——本轮不补挂，下一数据事件补。</summary>
-    private void RefreshQuotes()
+    private void RefreshQuotes(bool force = false)
     {
         var security = Portfolio[_symbol];
         var pos = security.Quantity;
         if (security.Price <= 0) return;   // 尚无行情价——市价减仓腿会被引擎拒价，等首个行情
+
+        // 节流（2026-10-25）：做市商挂在每次 tick 上，而撤改挂单本身又会制造簿变更 → 新 tick。
+        // 不节流时这个回路会在同一毫秒内自我放大（实测：前端每秒被灌几百帧同值快照，客户端
+        // native 侧积压后表现成「同一笔 tick 反复重投」、bot 日志 30 秒涨到 160MB）。
+        // 节流只丢「中间态」：下一次允许的报价始终用最新 `_last`，深度不会停在旧价位。
+        if (!force)
+        {
+            var now = DateTime.UtcNow;
+            if ((now - _lastQuoteUtc).TotalMilliseconds < _minQuoteIntervalMs) return;   // 中间态直接丢，下一次用最新 _last
+            _lastQuoteUtc = now;
+        }
+        else
+        {
+            _lastQuoteUtc = DateTime.UtcNow;
+        }
 
         // 超限减仓（自办强平）：市价吃非自有的对手流动性
         if (pos > _positionCap) MarketOrder(_symbol, _positionCap - pos, tag: "超限减仓");

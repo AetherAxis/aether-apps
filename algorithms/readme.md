@@ -5,7 +5,7 @@ Lean 机器人算法的**仓库分发副本**——克隆本项目即可看到�
 
 | 文件 | 说明 |
 |---|---|
-| `market-maker.lean.cs` | 做市商——围绕最新成交价上下各挂多档阶梯限价（带宽保留式维护）+ 预算式库存偏斜 + 超限市价减仓 |
+| `market-maker.lean.cs` | 做市商——围绕最新成交价上下各挂多档阶梯限价（带宽保留式维护）+ 预算式库存偏斜 + 超限市价减仓 + **报价节流**（`MinQuoteIntervalMs`，默认 300ms，防「tick→撤改→簿变更→tick」自激风暴） |
 | `noise-taker.lean.cs` | 噪声交易者——按节奏随机方向市价吃单 + 净持仓软钳 + 固定种子可复现 |
 
 两者组合 = 交易所的市场活力：做市挂深度、噪声吃深度，互为对手。
@@ -20,6 +20,11 @@ Windows: %LOCALAPPDATA%\Aether\Desktop-Stockapp\labs\leanalgorithms\
 ```
 
 然后：桌面端 Stockapp → 实盘 tab → 策略引擎选 `LeanAlgorithm` → 算法选 `market-maker` / `noise-taker` → 合约填 `zx001`（本地仿真柜台默认上市合约；自建交易所/服务器部署见 `apps/CtpSim` + `scripts/ctpsim-*.ps1`）→ 勾「真实下单」→ sim 前置登录后启动。
+
+**报价节流（2026-10-25）**：做市商每收到一笔 tick 就维护一次阶梯，而撤改挂单本身又是一次簿变更 ⇒ 新 tick。
+不节流时这个回路会在同一毫秒内自我放大（实测把前端灌到每秒几百帧同值快照，客户端 native 侧积压后表现成
+「同一笔 tick 反复重投」，bot 日志 30 秒涨到 160MB）。`MinQuoteIntervalMs` 只丢中间态——下一次允许的报价
+始终用最新价，深度不会停在旧价位；30s 兜底定时器以 `force` 绕过它。
 
 **双 bot = 两个桌面实例 + 不同账户**（互为对手撮合；勿两实例登同一账户——OrderRef 撞号）。行情/价格由订单簿真实撮合产生（挂单即推 tick、成交驱动最新价）。
 
