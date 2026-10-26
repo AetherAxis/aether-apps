@@ -119,7 +119,10 @@ var scripting = sp.GetRequiredService<IStrategyScriptingService>();
 var leanScripting = sp.GetRequiredService<ILeanAlgorithmScriptingService>();
 
 // —— 事件 → console 打印 ——
-var tickOn = true;
+// [tick] 逐笔打印默认关（2026-10-26 日志降噪）：真实部署下 bot 直连远程前置（旧构建无同值去重），
+// 行情活跃 ~2900 笔/s 会把日志刷成每天数百 MB。调试要看得设 AETHER_CTP_TICK_TRACE=1
+// （与 ② CtpMarketData 的 [ctp-md] Tick 同一开关），或 REPL 里 tick on 临时开。报单/成交/状态照常打印。
+var tickOn = Environment.GetEnvironmentVariable("AETHER_CTP_TICK_TRACE") is "1" or "true";
 var subscribed = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 session.ConnectionStateChanged += (_, s) => HostLog.Line($"[连接] {s}");
 session.OrderReceived += (_, o) => HostLog.Line($"[报单] {o}");

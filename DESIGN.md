@@ -83,3 +83,10 @@
 | 6 | P3 | 测试仅 2 例 | 只覆盖策略编译 | 补 HostOptions env 用例 | 装配无回归网 |
 | 7 | P3 | 部署仅手动 | `deploy-*.yml` 只有 `workflow_dispatch` | 加 `repository_dispatch` | 易漏部署 |
 | 8 | P4 | 文档漂移 | `readme.md:28` 旧路径；两 props 重复属性 | 更正、去重 | 纯维护性 |
+
+## 升级补记（2026-10-26）：console `[tick]` 逐笔打印默认关
+
+日志降噪（用户「之前调试才有的日志，真实部署不需要那么多——日志文件太大」）：`[tick]` 逐笔行
+默认不打印，env `AETHER_CTP_TICK_TRACE=1` 开（与 ② `CtpMarketData` 的 `[ctp-md] Tick` 同一开关）；
+REPL `tick on` 运行期开不受影响。报单/成交/状态/连接照常打印（bot 运行证据面）。实测动机：
+bot 直连远程前置（旧构建无同值去重）行情活跃 ~2900 笔/s，逐笔双路日志单 bot 半天 300MB+。
