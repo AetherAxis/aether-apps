@@ -4,14 +4,32 @@
 
 ## 组成
 
+六个宿主分属**两套系统**，两组之间零引用（依赖不同、部署不同、故障域不同）：
+
+### CTP 交易线（3 个）
+
 | 宿主 | 说明 |
 |---|---|
 | `Aether.Exchange.Host` | 仿真交易所（:17800；资金 = 链上 AQ 充值对账——见「资金机制」；`AETHER_CTP_SIM_BALANCE` 仅沙盒水龙头） |
 | `Aether.CtpFront.Host` | CTP 线协议前置（交易 :17801 / 行情 :17802，连 :17800） |
-| `Aether.Ledger.Node` | 链节点（:17805，链文件 ~/.aether/ledger.chain） |
-| `Aether.Ledger.Verify` | 独立链验证器（退出码 0=有效 / 2=无效） |
-| `Aether.Ledger.Wallet` | 钱包 CLI（`new`/`info`/`balance`/`transfer`/`deposit`/`withdraw`）——资金操作面，引 ① 账本 + ④ RPC；2026-10-27 自 monorepo `apps/LedgerWallet` 迁入 |
 | `Aether.CtpConsole` | console 算法 bot：Lean 实盘引擎 + CTP SDK 会话 + REPL——无 GUI 依赖，SSH 挂机/无人值守/轻量手动交易 |
+
+### 虚拟币线（3 个：一个服务端 + 一个客户端 + 一个验证器）
+
+| 宿主 | 形态 | 说明 |
+|---|---|---|
+| `Aether.Ledger.Node` | **服务端** | 链节点（:17805，链文件 `~/.aether/ledger.chain`）。链文件是唯一真相，重启 = 全量重放 |
+| `Aether.Ledger.Wallet` | **客户端** | 钱包 CLI（`new`/`info`/`balance`/`transfer`/`deposit`/`withdraw`）——唯一的资金操作面，引 ① 账本 + ④ RPC；**种子 = 全部财富** |
+| `Aether.Ledger.Verify` | 工具 | 独立链验证器（退出码 0=有效 / 2=无效）——不需要任何活进程即可验链 |
+
+三个宿主只引 ① `aether-ledger`（钱包另引 ④ `Aether.Exchange.Rpc` 做提现），和上面 CTP 三宿主**互不引用**。
+这两组如果将来发布节奏分化（虚拟币要独立发版/独立值守），可以整体迁到独立仓——现在合住是因为它们共享同一条
+「组合根只引不产」的纪律和同一套部署脚本习惯。
+
+### 策略源
+
+| 目录 | 说明 |
+|---|---|
 | `algorithms/` | Lean 策略源存档（market-maker / noise-taker）——运行时从实例目录 `labs/leanalgorithms/` 加载 |
 
 ## 目录布局（本仓是唯一例外：没有 `src/`）
