@@ -14,6 +14,18 @@
 | `Aether.CtpConsole` | console 算法 bot：Lean 实盘引擎 + CTP SDK 会话 + REPL——无 GUI 依赖，SSH 挂机/无人值守/轻量手动交易 |
 | `algorithms/` | Lean 策略源存档（market-maker / noise-taker）——运行时从实例目录 `labs/leanalgorithms/` 加载 |
 
+## 目录布局（本仓是唯一例外：没有 `src/`）
+
+仓根直接放宿主目录，和其余 13 仓的 `src/` 约定不一致——**有意为之**，不是历史遗留：
+
+- 这个仓是**组合根**：每个 `<X>.Host` 就是一个可执行单元，发布 = `<X>.Host/bin/…` 整个目录；
+  中间没有被引用的库需要归类，多一层 `src/` 只多一次路径跳转（部署脚本、CI、runbook 的路径都要跟着长）。
+- 目录名 = 程序集名 = 发布单元名，`dotnet run --project Aether.Exchange.Host` 直接可读可敲。
+
+约束：**新增宿主也放仓根、命名 `<域>.<角色>`**（Host / Node / Verify / Console / Wallet）；仓根不要新增库项目，
+真要抽公共库，它属于对应引擎仓（①④⑤⑥⑦），不属于这里。`doc/`（runbook）、`scripts/`（远程部署）、
+`tests/`（宿主级断言）、`algorithms/`（策略源存档）是仓级公共资产，平级放置。
+
 **一个目录一个完整实例**（console）：config.json / labs/ / ctp.db / lean-algo-cache 全部默认落当前工作目录——双 bot = 两个目录各跑一个，完全隔离；发布目录拷到哪就在哪跑。
 
 ## 本地 E2E（全链实跑）
