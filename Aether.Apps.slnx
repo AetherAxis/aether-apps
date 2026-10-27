@@ -3,6 +3,7 @@
   <Project Path="Aether.Exchange.Host/Aether.Exchange.Host.csproj" />
   <Project Path="Aether.Ledger.Node/Aether.Ledger.Node.csproj" />
   <Project Path="Aether.Ledger.Verify/Aether.Ledger.Verify.csproj" />
+  <Project Path="Aether.Ledger.Wallet/Aether.Ledger.Wallet.csproj" />
   <Project Path="Aether.CtpConsole/Aether.CtpConsole.csproj" />
   <Project Path="tests/Aether.Apps.Tests/Aether.Apps.Tests.csproj" />
 </Solution>

@@ -1,7 +1,7 @@
 # 交易所资金 Runbook（AQ 充值 / 提币）
 
 > **定位**：交易所场内资金的操作手册——钱从哪来、怎么充、怎么提。
-> 链自身运维（节点/种子/备份/排障）见 ① aether-ledger `doc/ledger-runbook.md`；服务器部署见本仓 `.github/workflows/deploy-*.yml` 与 `scripts/`。
+> 链自身运维（节点/种子/备份/排障）见 ① aether-ledger `doc/ledger-runbook.md`；服务器部署见本仓 `.github/workflows/deploy-*.yml` 与 `scripts/`（链 = `deploy-ledger`，2026-10-27 起本仓构建）。
 > ⚠ 本文档不含真实种子/密钥/服务器地址——它们只存在于你的离线备份里。
 
 ## 0. 全景（30 秒）
@@ -32,7 +32,7 @@ custody 托管地址（种子 = 交易所托管责任）
 
 **钱包 CLI**（`new` / `info` / `balance` / `transfer` / `deposit` / `withdraw`）：
 
-- 服务器上 `C:\Aether\LedgerWallet\Aether.Ledger.Wallet.exe`（随链三件套由 monorepo `deploy-ledger.yml` 部署——迁 ⑧ 见工作区根 MIGRATION.md P2-7）；本地 `dotnet run --project ~/Desktop/Aether/apps/LedgerWallet/Aether.Ledger.Wallet -- <命令>`。下文简写 `wallet`。
+- 服务器上 `C:\Aether\LedgerWallet\Aether.Ledger.Wallet.exe`（随链三件套由**本仓** `deploy-ledger.yml` 部署——2026-10-27 起源 = 本仓 `Aether.Ledger.Wallet` + ① 账本 + ④ RPC）；本地 `dotnet run --project ~/Desktop/AetherAxis/aether-apps/Aether.Ledger.Wallet -- <命令>`。下文简写 `wallet`。
 - 端点：链侧 `--node`（默认 127.0.0.1:17805）；提币 `--exchange`（默认 127.0.0.1:17800）。服务器上直跑用默认值即可；本地远程操作加 `--node <服务器IP>:17805`。
 - ⚠ **`transfer` / `deposit` 的 `--asset` 缺省是 coin（通道已退役）——AQ 操作必须显式 `--asset quote`**（`withdraw` 的缺省已是 quote）。
 
@@ -75,8 +75,8 @@ dotnet run --project aether-apps/Aether.Ledger.Node     # 新链种子打印在�
 AETHER_LEDGER_CUSTODY_SEED=<hex> dotnet run --project aether-apps/Aether.Exchange.Host
 dotnet run --project aether-apps/Aether.CtpFront.Host
 
-# 充值（本地 CLI 是 monorepo 的 LedgerWallet——P2-7 迁 ⑧ 前的操作面）
-wallet=~/Desktop/Aether/apps/LedgerWallet/Aether.Ledger.Wallet
+# 充值（本地 CLI = 本仓 Aether.Ledger.Wallet）
+wallet=~/Desktop/AetherAxis/aether-apps/Aether.Ledger.Wallet
 dotnet run --project $wallet -- balance --seed <custody种子hex>       # 输出 custody 地址
 dotnet run --project $wallet -- transfer --seed @treasury.seed --to <钱包地址> --amount 1000000 --asset quote
 dotnet run --project $wallet -- deposit --seed @运营钱包.seed --custody <custody地址> --account bot01 --amount 1000000 --asset quote

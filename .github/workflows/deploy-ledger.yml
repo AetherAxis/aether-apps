@@ -1,0 +1,93 @@
+name: Deploy Ledger Chain
+
+# 虚拟币链部署（AetherAxis 拆仓版，2026-10-27——自 monorepo deploy-ledger.yml 迁移改造）：
+#   AetherLedgerNode   = 链节点（:17805，链文件 C:\Aether\ledger-data\ledger.chain）
+#   Aether.Ledger.Wallet = 钱包 CLI（运维发币/充值/提币；2026-10-27 迁入本仓）
+#   Aether.Ledger.Verify = 独立验证器（链文件 0=有效 / 2=无效）
+# 与 monorepo 版差异：
+#   - 构建源 = 本仓（Node/Wallet/Verify 宿主与 scripts）+ ① aether-ledger（账本库）+ ④ aether-exchange（钱包
+#     withdraw 用的 JSON-RPC 客户端）——**不再构建任何 monorepo 副本**；① 的改动随本 workflow 一起上线
+#   - 触发仅 workflow_dispatch：① ④ 的 push 不会触发本 workflow（多仓 paths 联动已断）。
+#     **依赖仓有改动后须手动 Run workflow**；与 deploy-ctpsim / deploy-ctp-console 同一纪律
+#   - 服务器端零改动：服务名/部署目录/staging/防火墙沿用 ledger-setup-server.ps1 的既有约定（10-20 已就绪）
+#   - VERSION 记录两个仓的 commit（`<apps>+<ledger>`）——「我的改动到底上没上线」用钱包 info 之外的第二证据
+# 风险提示：本 workflow 会**重启链节点**（资产层短暂停服，约数秒；交易所桥轮询自动重连，交易所不用动）。
+# Secrets（在本仓 Settings → Secrets and variables → Actions 配置，与 monorepo 同名同值）：
+#   CTPSIM_SSH_HOST / CTPSIM_SSH_USER（Administrators 组）/ CTPSIM_SSH_KEY / 可选 CTPSIM_SSH_PORT
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: ledger-deploy      # SSH 部署有状态（停服务/换文件），两个 run 不许交错
+  cancel-in-progress: false
+
+env:
+  # 服务器上的部署中转目录——与 scripts/ledger-remote-deploy.ps1 的 $StagingDir 默认值是同值常量，改一处须同步另一处
+  LEDGER_STAGING: 'C:/Aether/ledger-tmp'
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        path: aether-apps
+    - uses: actions/checkout@v4
+      with:
+        repository: AetherAxis/aether-ledger
+        path: aether-ledger
+    - uses: actions/checkout@v4
+      with:
+        repository: AetherAxis/aether-exchange
+        path: aether-exchange
+
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: '10.0.x'
+
+    - name: Publish (node + wallet + verify, self-contained win-x64)
+      run: |
+        dotnet publish Aether.Ledger.Node   -c Release --self-contained true --runtime win-x64 -o ./publish/node
+        dotnet publish Aether.Ledger.Wallet -c Release --self-contained true --runtime win-x64 -o ./publish/wallet
+        dotnet publish Aether.Ledger.Verify -c Release --self-contained true --runtime win-x64 -o ./publish/verify
+      working-directory: aether-apps
+
+    - name: Bundle (VERSION stamp + tar)
+      run: |
+        # 版本戳带两个仓的 commit：链节点行为由 ① 决定、宿主由本仓决定——只写一个 sha 追不了「改动上没上线」
+        APP_SHA=$(git -C aether-apps rev-parse --short HEAD)
+        LEDGER_SHA=$(git -C aether-ledger rev-parse --short HEAD)
+        echo "${APP_SHA}+${LEDGER_SHA}" > aether-apps/publish/node/VERSION
+        cp aether-apps/publish/node/VERSION aether-apps/publish/wallet/VERSION
+        cp aether-apps/publish/node/VERSION aether-apps/publish/verify/VERSION
+        tar -czf ledger.tar.gz -C aether-apps/publish .
+
+    - name: Setup SSH key
+      env:
+        SSH_KEY: ${{ secrets.CTPSIM_SSH_KEY }}   # 与 ctpsim 共用同一台服务器的同一把钥匙
+      run: |
+        install -m 700 -d ~/.ssh
+        printf '%s\n' "$SSH_KEY" > ~/.ssh/ledger_key
+        chmod 600 ~/.ssh/ledger_key
+
+    - name: Upload (tar + deploy script -> staging)
+      env:
+        SSH_HOST: ${{ secrets.CTPSIM_SSH_HOST }}
+        SSH_USER: ${{ secrets.CTPSIM_SSH_USER }}
+        SSH_PORT: ${{ secrets.CTPSIM_SSH_PORT }}
+      run: |
+        scp -i ~/.ssh/ledger_key -o StrictHostKeyChecking=accept-new -P "${SSH_PORT:-22}" \
+          ledger.tar.gz aether-apps/scripts/ledger-remote-deploy.ps1 "${SSH_USER}@${SSH_HOST}:${LEDGER_STAGING}/"
+
+    - name: Deploy (stop -> swap three dirs -> start -> RPC probe)
+      env:
+        SSH_HOST: ${{ secrets.CTPSIM_SSH_HOST }}
+        SSH_USER: ${{ secrets.CTPSIM_SSH_USER }}
+        SSH_PORT: ${{ secrets.CTPSIM_SSH_PORT }}
+      run: |
+        ssh -i ~/.ssh/ledger_key -o StrictHostKeyChecking=accept-new -p "${SSH_PORT:-22}" \
+          "${SSH_USER}@${SSH_HOST}" \
+          "powershell -NoProfile -ExecutionPolicy Bypass -File ${LEDGER_STAGING}/ledger-remote-deploy.ps1"
+        # Windows OpenSSH 默认 shell 是 cmd.exe——显式起 powershell 跑脚本；唯一远程命令，零嵌套引号

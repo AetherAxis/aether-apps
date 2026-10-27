@@ -10,6 +10,7 @@
 | `Aether.CtpFront.Host` | CTP 线协议前置（交易 :17801 / 行情 :17802，连 :17800） |
 | `Aether.Ledger.Node` | 链节点（:17805，链文件 ~/.aether/ledger.chain） |
 | `Aether.Ledger.Verify` | 独立链验证器（退出码 0=有效 / 2=无效） |
+| `Aether.Ledger.Wallet` | 钱包 CLI（`new`/`info`/`balance`/`transfer`/`deposit`/`withdraw`）——资金操作面，引 ① 账本 + ④ RPC；2026-10-27 自 monorepo `apps/LedgerWallet` 迁入 |
 | `Aether.CtpConsole` | console 算法 bot：Lean 实盘引擎 + CTP SDK 会话 + REPL——无 GUI 依赖，SSH 挂机/无人值守/轻量手动交易 |
 | `algorithms/` | Lean 策略源存档（market-maker / noise-taker）——运行时从实例目录 `labs/leanalgorithms/` 加载 |
 
@@ -40,14 +41,19 @@ dotnet run --project ~/Desktop/AetherAxis/aether-apps/Aether.CtpConsole \
 
 - `deploy-ctpsim`：交易所 + 前置两 Windows 服务（AetherCtpExchange / AetherCtpFront），win-x64 自包含发布
 - `deploy-ctp-console`：console bot——publish 整替换 + 实例目录形态（实例 config.json 永不覆盖；labs/leanalgorithms 每次覆盖，`algorithms/` 是权威）
+- `deploy-ledger`：链三件套（AetherLedgerNode 服务 + 钱包 CLI + 独立验证器），**2026-10-27 起由本仓构建**——
+  源 = 本仓宿主 + ① `aether-ledger` + ④ `aether-exchange`（钱包 withdraw 的 RPC 客户端）；
+  旧 monorepo `deploy-ledger.yml` 的 push 触发已停用（`①` 的改动从此随本 workflow 上线，不再是「改了到不了服务器」）
 - 均 workflow_dispatch 手动触发：多仓 paths 联动已断——**依赖仓 push 后须手动 Run workflow 重新部署**
+  （`deploy-ledger` 会重启链节点 = 资产层短暂停服数秒，交易所桥轮询自动重连）
 
 ## 构建与测试
 
 ```bash
-dotnet test Aether.Apps.slnx    # tests/Aether.Apps.Tests：2 例——algorithms/{market-maker,noise-taker}.lean.cs 对 Runtime.Lean 编译器的锁定（策略源与编译验证同仓）
+dotnet test Aether.Apps.slnx    # tests/Aether.Apps.Tests：12 例——2 例策略源编译锁定（algorithms/*.lean.cs 对 Runtime.Lean）
+                                # + 10 例钱包 CLI 回归（进程内起真链节点跑 WalletCli，锁住 ① 账本 + ④ RPC 的接线）
 ```
 
 ## 来历
 
-2026-10-19 建为 sim-apps（Front.Host + Sim.Host 验证宿主）；2026-10-20 改名 aether-apps 并归一组合根——吸收 ① aether-ledger 的 LedgerNode/LedgerVerify、新增 CtpConsole 宿主与 algorithms/ 存档。完整决策记录见工作区根 `MIGRATION.md`。
+2026-10-19 建为 sim-apps（Front.Host + Sim.Host 验证宿主）；2026-10-20 改名 aether-apps 并归一组合根——吸收 ① aether-ledger 的 LedgerNode/LedgerVerify、新增 CtpConsole 宿主与 algorithms/ 存档；2026-10-27 收入 LedgerWallet CLI 与链部署脚本（`deploy-ledger`），旧 monorepo 链部署链退场。完整决策记录见工作区根 `MIGRATION.md`。
