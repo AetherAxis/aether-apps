@@ -580,7 +580,7 @@ internal static class HostLog
     public static void Prompt(string s) => (_out ?? Console.Out).Write(s);
 }
 
-/// <summary>极简 --key value 参数表（与 ⑧ Aether.Ledger.Wallet 的 Args 同款模式）。</summary>
+/// <summary>极简 --key value 参数表（与 ⑯ Aether.Ledger.Wallet 的 Args 同款模式）。</summary>
 internal sealed class Args
 {
     private readonly Dictionary<string, string> _map = new(StringComparer.OrdinalIgnoreCase);

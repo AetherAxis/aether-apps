@@ -2,21 +2,20 @@ using Ctp.Net;
 using Aether.Ledger;
 using Aether.Exchange;
 
-// 全局命名空间（host 惯例——同 Program.cs 的 Log/ExchangeHostedService；tests 引 exe 程序集可直接用）
+// 全局命名空间（host 惯例——同 Program.cs 的 Log；tests 引 exe 程序集可直接用）
 
 /// <summary>
-/// 计价币桥接线（批 4/6 → **2026-10-10 币通道退役后只剩 AQ 一条线**）：把链侧 AQ IOU 与交易所核心的
-/// 场内现金对齐。交易所单资产化——只收付计价币 AQ（像股票/期货账户充钱）；coin 留在链上钱包，
-/// 充币铸造/提币烧毁通道已整体拆除（ax001 = AQ 计价的保证金品种，场内头寸全部纸面，与链上 coin 无关）。
-/// 拓扑：LedgerBridge（链侦听）+ SimTradingCore（venue 账本）之间 <b>只有这一个类</b>，住在交易所宿主
-/// （composition root——两侧领域零互引：Aether.Ledger 纯库不碰 venue，Simulator 纯库不碰链）。
+/// **虚拟币结算轨道**（原 <c>LedgerSpotLink</c>，2026-10-27 更名并实现 ④ 的 <see cref="IExternalCashRail"/>）：
+/// ⑧ 交易所宿主里唯一碰 ① `Aether.Ledger` 的类，也是跨域胶水的全部。
+/// <para>把链侧 AQ 与场内现金对齐（2026-10-10 币通道退役后只剩 AQ 一条线，交易所单资产化——场内头寸
+/// 全部纸面，与链上 coin 无关）。拓扑：<c>LedgerBridge</c>（链侦听）+ <c>SimTradingCore</c>（venue 账本）
+/// 之间只有这一个类；两侧领域零互引（① 纯库不碰 venue，④ 纯库不碰链）。</para>
 ///
 /// <para><b>两个真相 + 一个对账循环</b>（任何崩溃窗口都收敛，无需额外持久化）：</para>
 /// <list type="bullet">
 /// <item>链侧真相：per-account AQ IOU（桥，从链全量重扫推导——充值 + / 提现 −，clamp 0）= 该账户的<b>净入账目标</b>（原子数）。</item>
 /// <item>DB 侧真相：sim_quote_minted 台账（Credit/Withdraw 自动维护）= <b>已入账量</b>。</item>
-/// <item>每秒对账：差正 → <see cref="SimTradingCore.CreditQuoteDeposit"/> 现金入账；差负 → WithdrawQuoteCash 扣减。
-/// 交易（盈亏/手续费）只动现金<b>不改变两侧</b>——对账天然不感知交易。</item>
+/// <item>每秒对账：差正 → <see cref="SimTradingCore.CreditQuoteDeposit"/> 现金入账；差负 → WithdrawQuoteCash 扣减。</item>
 /// </list>
 ///
 /// <para><b>提现闸门 = venue 可用现金</b>（经 <see cref="ILedgerWithdrawHook"/>，签名前扣减——静态可用：
@@ -25,8 +24,13 @@ using Aether.Exchange;
 /// <para><b>粉尘语义</b>：充值 atoms → 现金按 <see cref="SimTradingCore.QuoteAtomsPerToken"/> 换算（1 AQ = 1 现金），
 /// 不足 1 AQ 的原子零头不入账、目标值稳定（不会反复触发对账）。</para>
 /// </summary>
-public sealed class LedgerSpotLink : ILedgerWithdrawHook, IDisposable
+public sealed class LedgerCashRail : IExternalCashRail, ILedgerWithdrawHook
 {
+    /// <summary>轨道标识——<c>AETHER_SETTLEMENT_RAIL</c> 的取值。</summary>
+    public const string RailIdValue = "ledger-aq";
+
+    private const string CoinRetired = "币通道已退役（2026-10-10 拆除——交易所只收付计价币 AQ；coin 留在链上钱包）";
+
     private readonly SimTradingCore _core;
     private readonly LedgerBridge _bridge;
     private readonly TimeSpan _interval;
@@ -34,30 +38,66 @@ public sealed class LedgerSpotLink : ILedgerWithdrawHook, IDisposable
     private int _reconciling;          // 对账重入守卫（timer tick 与 ReconcileNow 互斥）
     private readonly Dictionary<string, string> _lastErrors = new(StringComparer.Ordinal);   // 扣减失败日志去重
 
-    public LedgerSpotLink(SimTradingCore core, LedgerBridge bridge, TimeSpan? reconcileInterval = null)
+    public LedgerCashRail(SimTradingCore core, LedgerBridge bridge, TimeSpan? reconcileInterval = null)
     {
         _core = core;
         _bridge = bridge;
         _interval = reconcileInterval ?? TimeSpan.FromSeconds(1);
+        _bridge.WithdrawHook = this;   // 提现闸门 = venue 可用现金（签名前扣减）
     }
 
-    /// <summary>启动：首轮对账 + 周期对账（周期默认 1s——链出块间隔秒级，足够灵敏）。</summary>
-    public Task StartAsync(CancellationToken ct = default)
+    public string RailId => RailIdValue;
+
+    public string AssetSymbol => "AQ";
+
+    /// <summary>托管地址（日志/运维排障用）。</summary>
+    public string CustodyAddressHex => _bridge.CustodyAddress.Hex;
+
+    /// <summary>启动：连线（全量重扫恢复 IOU）+ 首轮对账 + 周期对账（默认 1s——链出块间隔秒级，足够灵敏）。</summary>
+    public async Task StartAsync(CancellationToken ct = default)
     {
+        await _bridge.StartAsync(ct);   // 全量重扫链恢复 IOU 状态（链是唯一真相）
         Reconcile("启动对账");
         _timer = new Timer(_ => Reconcile("对账"), null, _interval, _interval);
-        return Task.CompletedTask;
     }
 
     /// <summary>
-    /// 提现钩子：计价币 = 扣场内现金（静态可用闸门——锁定保证金/挂单冻结/浮盈不可提）。
-    /// 桥签名出金之前。asset=Coin 拒（币通道已退役）。
+    /// 提现出金（wire op <c>withdraw</c> 的落点）：扣场内现金（闸门）→ custody 签名链上转账 → 提交节点。
+    /// <para>错误映射：链侧业务错（<see cref="LedgerClientException"/>）→ <see cref="ExchangeBusinessException"/>(90019, 消息透传)；
+    /// 地址非法 → 90003；未知资产 → 90003。与拆出前 <c>LedgerWithdrawGlue</c> 的映射逐条一致。</para>
+    /// </summary>
+    public async Task<string> WithdrawAsync(string accountId, string destination, ulong amountAtoms, string asset,
+        CancellationToken ct = default)
+    {
+        var assetId = asset switch
+        {
+            "coin" => throw new ExchangeBusinessException(SimErrorCodes.WithdrawalFailed, CoinRetired),
+            "quote" => LedgerSupply.Assets.Quote,
+            _ => throw new ExchangeBusinessException(SimErrorCodes.InvalidParameter, $"未知资产 \"{asset}\"（coin|quote）"),
+        };
+        try
+        {
+            return await _bridge.WithdrawAsync(accountId, LedgerAddress.Parse(destination), amountAtoms, assetId, ct);
+        }
+        catch (LedgerClientException ex)
+        {
+            throw new ExchangeBusinessException(SimErrorCodes.WithdrawalFailed, ex.Message);
+        }
+        catch (FormatException ex)
+        {
+            throw new ExchangeBusinessException(SimErrorCodes.InvalidParameter, $"提币地址非法：{ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// 提现钩子（<see cref="ILedgerWithdrawHook"/>）：计价币 = 扣场内现金（静态可用闸门——锁定保证金/挂单冻结/浮盈不可提）。
+    /// 桥签名出金之前调用。asset=Coin 拒（币通道已退役）。
     /// </summary>
     public Task<(bool Ok, string? Error)> TryBurnForWithdrawalAsync(string accountKey, ulong amountAtoms,
         uint asset = LedgerSupply.Assets.Quote, CancellationToken ct = default)
     {
         if (asset != LedgerSupply.Assets.Quote)
-            return Task.FromResult<(bool Ok, string? Error)>((false, "币通道已退役（2026-10-10 拆除——交易所只收付计价币 AQ；coin 留在链上钱包）"));
+            return Task.FromResult<(bool Ok, string? Error)>((false, CoinRetired));
         try
         {
             _core.WithdrawQuoteCash(accountKey, amountAtoms);
@@ -76,6 +116,14 @@ public sealed class LedgerSpotLink : ILedgerWithdrawHook, IDisposable
     {
         _timer?.Dispose();
         _timer = null;
+        _bridge.Dispose();
+    }
+
+    /// <summary>IAsyncDisposable 履行（桥是同步释放——链路只有 TCP 连接与定时器）。</summary>
+    public ValueTask DisposeAsync()
+    {
+        Dispose();
+        return ValueTask.CompletedTask;
     }
 
     // —— 内部 ——

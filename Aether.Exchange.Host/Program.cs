@@ -25,6 +25,8 @@ using Microsoft.Extensions.Hosting;
 // 批 3 交易所桥（2026-10-06；2026-10-10 币通道退役——只收付计价币 AQ）：托管充提现——须 AETHER_LEDGER_* env：
 //   AETHER_LEDGER_NODE_ADDR     链节点端点（默认 127.0.0.1:17805；未设且链节点未运行 = 桥不启动——交易所照常跑）
 //   AETHER_LEDGER_CUSTODY_SEED  custody 钱包种子（hex 64 字符——丢失 = 托管 AQ 不可提；生成时日志打印）
+//   AETHER_SETTLEMENT_RAIL      结算轨道选择（ledger-aq | none；不设 = 有 seed 就 ledger-aq，否则 none）
+//                               换外部币 = 在 SettlementRailFactory 加一个分支 + 一个 IExternalCashRail 实现
 //
 // 价格源恒为订单簿价格发现（2026-10-03 起 walk/回放已删除）：行情 = 簿顶 + 成交流，tick 事件驱动；
 // 流动性由外部客户端策略（labs leanalgorithms 做市/噪声 bot）供给——不起 bot = 空闲市场无对手价（真实交易所本义）。
@@ -55,49 +57,37 @@ else
 
 var core = new SimTradingCore(opts.Core, store: store);
 
-// 批 3 交易所桥（2026-10-10 币通道退役——AQ 单资产）：custody 充提现（opt-in——未设 env = 不启动，交易所照常跑）。
-// LedgerSpotLink = AQ 对账（链 IOU ↔ 现金台账：充值入现金 / 提现扣现金）+ 提现闸门（venue 可用现金）。
-LedgerBridge? bridge = null;
-LedgerSpotLink? spotLink = null;
-SimWithdrawHandler? withdrawHandler = null;
-var custodySeed = Environment.GetEnvironmentVariable("AETHER_LEDGER_CUSTODY_SEED");
-if (!string.IsNullOrWhiteSpace(custodySeed))
-{
-    var nodeAddr = Environment.GetEnvironmentVariable("AETHER_LEDGER_NODE_ADDR") ?? "127.0.0.1:17805";
-    var (nodeHost, nodePort) = nodeAddr.LastIndexOf(':') > 0
-        ? (nodeAddr[..nodeAddr.LastIndexOf(':')], int.Parse(nodeAddr[(nodeAddr.LastIndexOf(':') + 1)..]))
-        : ("127.0.0.1", 17805);
-    var custody = new LedgerWallet(Convert.FromHexString(custodySeed));
-    var nodeClient = new LedgerClient(nodeHost, nodePort);
-    bridge = new LedgerBridge(nodeClient, custody, msg => Log.Line($"[LEDGER-BRIDGE] {msg}"));
-    spotLink = new LedgerSpotLink(core, bridge);
-    bridge.WithdrawHook = spotLink;   // 提现闸门 = venue 可用现金（签名前扣减）
-    // 提币操作面（wire op `withdraw`）：桥 → SimWithdrawHandler 契约（LedgerWithdrawGlue 共享映射；
-    // 未接桥 = handler null → op 侧诚实报 90019）
-    withdrawHandler = LedgerWithdrawGlue.Wrap(bridge);
-}
+// 外部结算轨道（opt-in，2026-10-10 币通道退役后只剩 AQ 一条线）：见 SettlementRailFactory。
+// 轨道 = ④ 的 IExternalCashRail 端口 + 本仓适配器；交易所核心不认识任何具体币种。
+// 未接轨道 = withdrawHandler null → op 侧诚实报 90019，其余交易链路照常跑。
+var rail = SettlementRailFactory.Create(core);
+SimWithdrawHandler? withdrawHandler = rail is null
+    ? null
+    // wire op `withdraw`：轨道负责「扣现金（闸门）→ 签名出金」并把链侧错误映射成 90019
+    : (account, toHex, atoms, asset) => rail.WithdrawAsync(account, toHex, atoms, asset);
 
 var server = new SimRpcServer(core, opts.Host, opts.Port, withdrawHandler);   // wire op `withdraw`（提币操作面）
-builder.Services.AddHostedService(_ => new ExchangeHostedService(core, server, opts, bridge, spotLink));
+builder.Services.AddHostedService(_ => new ExchangeHostedService(core, server, opts, rail));
 await builder.Build().RunAsync();
 
-/// <summary>交易所生命周期：启动 = 恢复账本 + RPC 监听 + 桥初始化（opt-in）+ 现货对账；停止 = 关连接 + 落盘 + 桥停。</summary>
+/// <summary>交易所生命周期：启动 = 恢复账本 + RPC 监听 + 结算轨道（opt-in）+ 现货对账；停止 = 关连接 + 落盘 + 轨道停。</summary>
 internal sealed class ExchangeHostedService(SimTradingCore core, SimRpcServer server, SimHostOptions opts,
-    LedgerBridge? bridge, LedgerSpotLink? spotLink)
+    IExternalCashRail? rail)
     : IHostedService
 {
     public async Task StartAsync(CancellationToken ct)
     {
         await core.InitializeAsync(ct);   // 重启恢复：挂单作废、报单号/成交号序列续排（host 启动时一次）
         server.Start();
-        if (bridge is not null)
+        if (rail is not null)
         {
-            await bridge.StartAsync(ct);   // 全量重扫链恢复 IOU 状态（链是唯一真相）
-            Log.Line($"[LEDGER-BRIDGE] 交易所桥就绪：custody {bridge.CustodyAddress.Hex[..12]}…");
-        }
-        if (spotLink is not null)
-        {
-            await spotLink.StartAsync(ct);   // 首轮对账：补铸历史充币 + custody 供给同步；此后每秒一轮
+            // 连线 + 首轮对账：补铸历史充币 + custody 供给同步；此后每秒一轮。
+            // 连不上 = 异常上抛 = 宿主启动失败（接了轨道就是硬依赖，不带病启动）。
+            await rail.StartAsync(ct);
+            if (rail is LedgerCashRail ledger)
+                Log.Line($"[LEDGER-BRIDGE] 交易所桥就绪：custody {ledger.CustodyAddressHex[..12]}…");
+            else
+                Log.Line($"[SETTLEMENT] 结算轨道 {rail.RailId}（{rail.AssetSymbol}）已就绪");
         }
         var port = server.LocalEndpoint?.Port ?? opts.Port;
         var listed = core.QueryListedInstruments();
@@ -113,8 +103,7 @@ internal sealed class ExchangeHostedService(SimTradingCore core, SimRpcServer se
 
     public async Task StopAsync(CancellationToken ct)
     {
-        spotLink?.Dispose();   // 先停对账循环（不再铸造/烧毁），桥再停
-        bridge?.Dispose();
+        if (rail is not null) await rail.DisposeAsync();   // 停对账循环（不再铸造/烧毁）+ 关桥连接
         await server.StopAsync();
         core.Dispose();   // 同步 flush（重启续用靠这里落盘）
         Log.Line("[CTP-SIM] 交易所已退出，账本已落盘。");

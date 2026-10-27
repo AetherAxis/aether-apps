@@ -1,9 +1,8 @@
 <Solution>
+  <!-- 虚拟币三宿主（Node / Wallet / Verify）已于 2026-10-27 拆出到 ⑯ aether-coin：
+       它们有自己的服务端、部署和故障域，不该和 CTP 宿主共享同一个构建上下文。 -->
   <Project Path="Aether.CtpFront.Host/Aether.CtpFront.Host.csproj" />
   <Project Path="Aether.Exchange.Host/Aether.Exchange.Host.csproj" />
-  <Project Path="Aether.Ledger.Node/Aether.Ledger.Node.csproj" />
-  <Project Path="Aether.Ledger.Verify/Aether.Ledger.Verify.csproj" />
-  <Project Path="Aether.Ledger.Wallet/Aether.Ledger.Wallet.csproj" />
   <Project Path="Aether.CtpConsole/Aether.CtpConsole.csproj" />
   <Project Path="tests/Aether.Apps.Tests/Aether.Apps.Tests.csproj" />
 </Solution>

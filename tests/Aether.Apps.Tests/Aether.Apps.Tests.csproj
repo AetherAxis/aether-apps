@@ -24,9 +24,7 @@
          Apps 是组合根：策略源存档与编译验证同仓（algorithms/ 即本仓根目录）。
          CI 已按拓扑 checkout 兄弟仓（aether-trading 等），无需新增。 -->
     <ProjectReference Include="..\..\..\aether-trading\src\Aether.Trading.Runtime.Lean\Aether.Trading.Runtime.Lean.csproj" />
-    <!-- 钱包 CLI 回归（2026-10-27 迁自 monorepo）：进程内起真链节点跑 RunAsync——
-         引的是「本仓的 CLI 项目」而不是 ① 的库，才能真正锁住迁移后的接线（④ RPC + ① 账本）。 -->
-    <ProjectReference Include="..\..\Aether.Ledger.Wallet\Aether.Ledger.Wallet.csproj" />
+    <!-- 钱包 CLI 回归（10 例）已于 2026-10-27 随虚拟币线迁到 ⑯ aether-coin/tests/Aether.Ledger.Wallet.Tests。 -->
   </ItemGroup>
 
 </Project>
