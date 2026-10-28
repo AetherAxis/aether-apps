@@ -83,7 +83,7 @@ jobs:
         working-directory: aether-ctp-hosts
 
       # 2 例 = algorithms/ 交易所 bot 策略源（market-maker/noise-taker）对 Runtime.Lean 编译器的锁定。
-      # 钱包 CLI 的 10 例回归随虚拟币线迁到 ⑯ aether-coin（本仓不再覆盖）。
+      # 钱包 CLI 的 10 例回归随虚拟币线迁到 ⑯ aether-coin-hosts（本仓不再覆盖）。
       - name: Test
         run: dotnet test Aether.CtpHosts.slnx -c Release --no-build
         working-directory: aether-ctp-hosts
