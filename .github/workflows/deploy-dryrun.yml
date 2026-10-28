@@ -1,0 +1,188 @@
+name: Deploy Dry-run (no SSH)
+
+# 「拆仓/改名/布局变动 → 部署当天才发现炸」的防线：每次 push 就把部署的**构建半边**跑一遍。
+#
+# 只做 deploy-ctpsim / deploy-ctp-console 的 checkout + Publish + Bundle 三步，**零 SSH、不碰服务器**，
+# 所以它可以挂在 push 上随便跑。故意的：dry-run 的 checkout 列表 = 部署 workflow 的 checkout 列表，
+# 缺一个兄弟仓这里就会 MSB3202 变红 —— 这正是拆仓后最容易断、本地又永远看不出来的那一环
+# （本地 16 仓并排，相对路径全解析得到）。
+#
+# ⚠ 与 deploy-ctpsim.yml / deploy-ctp-console.yml 的同名步骤必须逐字一致——改一处同步另一处
+#   （与 CTPSIM_STAGING 常量的纪律相同）。它断言的是部署脚本的隐含契约：
+#   · binPath 约定：产物必须有 Aether.Exchange.Host.exe / Aether.CtpFront.Host.exe（远端 sc.exe config 写死这两个名字）
+#   · tar 布局：ctpsim 根下 exchange/ + front/；console 根下平铺（exe/labs/VERSION 直接可见，多套一层远端就找不到路径）
+#   · console 的 labs/LeanData/config 模板由 Bundle 现场生成，不是 publish 产物——这里同样断言非空
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  ctpsim:
+    name: ctpsim (exchange + front)
+    runs-on: ubuntu-latest
+    steps:
+    # checkout 列表必须与 deploy-ctpsim.yml 一致（两侧同改）
+    - uses: actions/checkout@v4
+      with:
+        path: aether-ctp-hosts
+    - uses: actions/checkout@v4
+      with:
+        repository: AetherAxis/aether-exchange
+        path: aether-exchange
+    - uses: actions/checkout@v4
+      with:
+        repository: AetherAxis/aether-ledger
+        path: aether-ledger
+    - uses: actions/checkout@v4
+      with:
+        repository: AetherAxis/ctp-net-contracts
+        path: ctp-net-contracts
+    - uses: actions/checkout@v4
+      with:
+        repository: AetherAxis/ctp-net-core
+        path: ctp-net-core
+    - uses: actions/checkout@v4
+      with:
+        repository: AetherAxis/ctp-net-front
+        path: ctp-net-front
+    - uses: actions/checkout@v4
+      with:
+        repository: AetherAxis/ctp-net-client
+        path: ctp-net-client
+    - uses: actions/checkout@v4
+      with:
+        repository: AetherAxis/aether-trading
+        path: aether-trading
+
+    - uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: 10.0.x
+
+    - name: Publish (both hosts, self-contained win-x64)
+      run: |
+        dotnet publish Aether.Exchange.Host -c Release --self-contained true --runtime win-x64 -o ./publish/exchange
+        dotnet publish Aether.CtpFront.Host -c Release --self-contained true --runtime win-x64 -o ./publish/front
+      working-directory: aether-ctp-hosts
+
+    - name: Assert binPath contract (远端 sc.exe config 的硬约定)
+      shell: bash
+      run: |
+        fail=0
+        for f in publish/exchange/Aether.Exchange.Host.exe publish/front/Aether.CtpFront.Host.exe; do
+          if [ -f "aether-ctp-hosts/$f" ]; then
+            echo "OK  $f"
+          else
+            echo "::error::缺 $f —— 远端脚本会把服务 binPath 写死成这个名字，缺了服务起不来"
+            fail=1
+          fi
+        done
+        exit $fail
+
+    - name: Bundle + assert tar layout (远端按 exchange/ front/ 解包)
+      shell: bash
+      run: |
+        tar -czf ctpsim.tar.gz -C aether-ctp-hosts/publish .
+        tar -tzf ctpsim.tar.gz > entries.txt
+        fail=0
+        for part in exchange front; do
+          if grep -qE "^\./$part/?\$" entries.txt; then
+            echo "OK  tar 根下有 $part/"
+          else
+            echo "::error::tar 根下缺 $part/ —— 远端脚本解包后要求 \$out\\$part 存在"
+            fail=1
+          fi
+        done
+        exit $fail
+
+  console:
+    name: ctp-console
+    runs-on: ubuntu-latest
+    steps:
+    # checkout 列表必须与 deploy-ctp-console.yml 一致（两侧同改）
+    - uses: actions/checkout@v4
+      with:
+        path: aether-ctp-hosts
+    - uses: actions/checkout@v4
+      with:
+        repository: AetherAxis/aether-exchange
+        path: aether-exchange
+    - uses: actions/checkout@v4
+      with:
+        repository: AetherAxis/aether-ledger
+        path: aether-ledger
+    - uses: actions/checkout@v4
+      with:
+        repository: AetherAxis/ctp-net-contracts
+        path: ctp-net-contracts
+    - uses: actions/checkout@v4
+      with:
+        repository: AetherAxis/ctp-net-core
+        path: ctp-net-core
+    - uses: actions/checkout@v4
+      with:
+        repository: AetherAxis/ctp-net-front
+        path: ctp-net-front
+    - uses: actions/checkout@v4
+      with:
+        repository: AetherAxis/ctp-net-client
+        path: ctp-net-client
+    - uses: actions/checkout@v4
+      with:
+        repository: AetherAxis/aether-trading
+        path: aether-trading
+
+    - uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: 10.0.x
+
+    - name: Publish (self-contained win-x64)
+      run: |
+        dotnet publish Aether.CtpConsole -c Release --self-contained true --runtime win-x64 -o ./publish/console
+      working-directory: aether-ctp-hosts
+
+    # 与 deploy-ctp-console.yml 的 Bundle 步骤逐字一致（labs / LeanData / config 模板是现场生成的）
+    - name: Bundle (LeanData 最小子集 + labs 算法模板 + 实例 config 模板 + VERSION stamp + tar)
+      shell: bash
+      run: |
+        mkdir -p aether-ctp-hosts/publish/console/LeanData/market-hours aether-ctp-hosts/publish/console/LeanData/symbol-properties
+        cp -r aether-trading/LeanData/market-hours/. aether-ctp-hosts/publish/console/LeanData/market-hours/
+        cp -r aether-trading/LeanData/symbol-properties/. aether-ctp-hosts/publish/console/LeanData/symbol-properties/
+        mkdir -p aether-ctp-hosts/publish/console/labs/leanalgorithms
+        cp aether-ctp-hosts/algorithms/*.lean.cs aether-ctp-hosts/publish/console/labs/leanalgorithms/
+        for inst in botmm botnoise; do
+          printf '{"defaultProfile":"%s","labs":null,"data":null,"profiles":{"%s":{"front":"tcp://127.0.0.1:17801","mdFront":"tcp://127.0.0.1:17802","user":"%s","password":"%s","broker":"9999","appId":"simnow_client_test","authCode":"0000000000000000"}}}' \
+            "$inst" "$inst" "$inst" "$inst" > "aether-ctp-hosts/publish/console/config.$inst.json"
+        done
+        git -C aether-ctp-hosts rev-parse --short HEAD > aether-ctp-hosts/publish/console/VERSION
+        tar -czf ctp-console.tar.gz -C aether-ctp-hosts/publish/console .
+
+    - name: Assert bundle contract (远端实例同步依赖这些路径)
+      shell: bash
+      run: |
+        P=aether-ctp-hosts/publish/console
+        fail=0
+        check() { if [ "$2" -ge 1 ]; then echo "OK  $1 ($2)"; else echo "::error::$1 为 0 —— 远端实例同步会拿到空目录"; fail=1; fi; }
+
+        if [ -f "$P/Aether.CtpConsole.exe" ]; then echo "OK  exe 在包根"; else echo "::error::包根缺 Aether.CtpConsole.exe（远端 \$Root\\publish 直接用它）"; fail=1; fi
+        check "labs/leanalgorithms/*.lean.cs" "$(ls -1 $P/labs/leanalgorithms/*.lean.cs 2>/dev/null | wc -l | tr -d ' ')"
+        check "LeanData 文件"                 "$(find $P/LeanData -type f 2>/dev/null | wc -l | tr -d ' ')"
+        for inst in botmm botnoise; do
+          if [ -f "$P/config.$inst.json" ]; then echo "OK  config.$inst.json 模板"; else echo "::error::缺 config.$inst.json 模板（首次部署的实例开箱即跑靠它）"; fail=1; fi
+        done
+
+        tar -tzf ctp-console.tar.gz > entries.txt
+        if grep -qx '\./Aether.CtpConsole.exe' entries.txt; then
+          echo "OK  tar 根平铺（没有多套一层目录）"
+        else
+          echo "::error::tar 多了层目录 —— 远端解压到 publish 后会变成 publish\\console\\…，实例同步找不到路径"
+          head -20 entries.txt
+          fail=1
+        fi
+        exit $fail

@@ -26,6 +26,24 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
+    # 新仓/改名后 Secrets 不随仓迁移（2026-10-28 ⑯ 拆出后实测：新仓一个都没有）。
+    # 空值一路走到 scp 才炸的报错极难读（目标会变成 "user@"），所以在任何动作之前先断言。
+    - name: Preflight (本仓 Secrets 已配)
+      shell: bash
+      env:
+        SSH_HOST: ${{ secrets.CTPSIM_SSH_HOST }}
+        SSH_USER: ${{ secrets.CTPSIM_SSH_USER }}
+        SSH_KEY: ${{ secrets.CTPSIM_SSH_KEY }}
+      run: |
+        missing=""
+        if [ -z "$SSH_HOST" ]; then missing="$missing CTPSIM_SSH_HOST"; fi
+        if [ -z "$SSH_USER" ]; then missing="$missing CTPSIM_SSH_USER"; fi
+        if [ -z "$SSH_KEY" ];  then missing="$missing CTPSIM_SSH_KEY"; fi
+        if [ -n "$missing" ]; then
+          echo "::error::本仓 Actions Secrets 缺少:$missing —— Secrets 不随仓迁移，到本仓 Settings → Secrets and variables → Actions 重配"
+          exit 1
+        fi
+        echo "OK  SSH secrets 已配（host/user/key 均不打印）"
     - uses: actions/checkout@v4
       with:
         path: aether-ctp-hosts
