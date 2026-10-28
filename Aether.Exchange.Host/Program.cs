@@ -7,8 +7,8 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 
 // ── CTP 本地仿真交易所（独立服务端进程——2026-10-05 起与前置分离，真实世界对齐）────────────
-// 单独起交易所：dotnet run --project aether-apps/Aether.Exchange.Host
-// 前置（券商侧接入层）是独立进程：dotnet run --project aether-apps/Aether.CtpFront.Host
+// 单独起交易所：dotnet run --project aether-ctp-hosts/Aether.Exchange.Host
+// 前置（券商侧接入层）是独立进程：dotnet run --project aether-ctp-hosts/Aether.CtpFront.Host
 // （连接本交易所 127.0.0.1:17800，对客户端监听 17801/17802——详见该 host 头注释）
 // 客户端（Aether 桌面 app）一律官方 SDK 链路：期货页登录窗口前置地址填 tcp://127.0.0.1:17801/17802。
 //
@@ -98,7 +98,7 @@ internal sealed class ExchangeHostedService(SimTradingCore core, SimRpcServer se
             Log.Line($"[CTP-SIM]   账户 {accounts.Count} 个（{accounts.Count(a => a.HasPassword)} 个已设密码）：{string.Join(",", accounts.Select(a => a.AccountId))}");
         Log.Line($"[CTP-SIM]   行情 交易所模式：订单簿 + 成交驱动（价格发现归簿）| 做市/噪声 = 外部客户端策略（labs leanalgorithms）| 新账户初始资金 {opts.Core.InitialBalance}");
         Log.Line($"[CTP-SIM]   上市合约 {listed.Count} 个：{string.Join(",", listed.Select(i => i.InstrumentId))}");
-        Log.Line("[CTP-SIM] Ctrl+C 退出（账本自动落盘）。前置进程：dotnet run --project aether-apps/Aether.CtpFront.Host（连接 127.0.0.1:17800）。");
+        Log.Line("[CTP-SIM] Ctrl+C 退出（账本自动落盘）。前置进程：dotnet run --project aether-ctp-hosts/Aether.CtpFront.Host（连接 127.0.0.1:17800）。");
     }
 
     public async Task StopAsync(CancellationToken ct)

@@ -1,4 +1,4 @@
-# Aether.Apps
+# Aether.CtpHosts
 
 组合根宿主仓——各核心库的可执行宿主 + console 算法 bot + 策略源存档。**不发 NuGet**（部署/验证单元，非被引用单元；跨仓依赖以本地 ProjectReference 组装）。
 
@@ -49,7 +49,7 @@ dotnet run --project Aether.CtpFront.Host   # :17801/:17802
 # console 直跑（在实例目录内运行——config.json 按 cwd 发现）
 mkdir -p /tmp/e2e/labs/leanalgorithms && cp algorithms/*.lean.cs /tmp/e2e/labs/leanalgorithms/
 cd /tmp/e2e
-dotnet run --project ~/Desktop/AetherAxis/aether-apps/Aether.CtpConsole \
+dotnet run --project ~/Desktop/AetherAxis/aether-ctp-hosts/Aether.CtpConsole \
   -- --profile bot01 --run-strategy market-maker zx001 --real --max-volume 1
 ```
 
@@ -69,10 +69,10 @@ dotnet run --project ~/Desktop/AetherAxis/aether-apps/Aether.CtpConsole \
 ## 构建与测试
 
 ```bash
-dotnet test Aether.Apps.slnx    # tests/Aether.Apps.Tests：2 例策略源编译锁定（algorithms/*.lean.cs 对 Runtime.Lean）
+dotnet test Aether.CtpHosts.slnx    # tests/Aether.CtpHosts.Tests：2 例策略源编译锁定（algorithms/*.lean.cs 对 Runtime.Lean）
                                 # 钱包 CLI 的 10 例回归随虚拟币线在 ⑯ aether-coin/tests/Aether.Ledger.Wallet.Tests
 ```
 
 ## 来历
 
-2026-10-19 建为 sim-apps（Front.Host + Sim.Host 验证宿主）；2026-10-20 改名 aether-apps 并归一组合根——吸收 ① aether-ledger 的 LedgerNode/LedgerVerify、新增 CtpConsole 宿主与 algorithms/ 存档；2026-10-27 上午收入 LedgerWallet CLI 与链部署脚本（`deploy-ledger`），同日拆出到 ⑯ `aether-coin`——虚拟币有独立的服务端/客户端/部署/故障域，不该和 CTP 宿主共享构建上下文。完整决策记录见工作区根 `MIGRATION.md`。
+2026-10-19 建为 sim-apps（Front.Host + Sim.Host 验证宿主）；2026-10-20 改名 aether-apps 并归一组合根——吸收 ① aether-ledger 的 LedgerNode/LedgerVerify、新增 CtpConsole 宿主与 algorithms/ 存档；2026-10-27 上午收入 LedgerWallet CLI 与链部署脚本（`deploy-ledger`），同日拆出到 ⑯ `aether-coin`——虚拟币有独立的服务端/客户端/部署/故障域，不该和 CTP 宿主共享构建上下文；2026-10-28 改名 `aether-ctp-hosts`（虚拟币宿主已拆走，仓里只剩 CTP 宿主：`apps` 名不副实，且与 ⑮ `aether-ai-app` 的 app 概念冲突；结构与部署不动）。完整决策记录见工作区根 `MIGRATION.md`。

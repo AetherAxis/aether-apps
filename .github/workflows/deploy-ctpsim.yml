@@ -32,7 +32,7 @@ jobs:
     steps:
     - uses: actions/checkout@v4
       with:
-        path: aether-apps
+        path: aether-ctp-hosts
     - uses: actions/checkout@v4
       with:
         repository: AetherAxis/aether-exchange
@@ -71,13 +71,13 @@ jobs:
       run: |
         dotnet publish Aether.Exchange.Host -c Release --self-contained true --runtime win-x64 -o ./publish/exchange
         dotnet publish Aether.CtpFront.Host -c Release --self-contained true --runtime win-x64 -o ./publish/front
-      working-directory: aether-apps
+      working-directory: aether-ctp-hosts
 
     - name: Bundle (VERSION stamp + tar)
       run: |
-        git -C aether-apps rev-parse --short HEAD > aether-apps/publish/exchange/VERSION
-        cp aether-apps/publish/exchange/VERSION aether-apps/publish/front/VERSION
-        tar -czf ctpsim.tar.gz -C aether-apps/publish .
+        git -C aether-ctp-hosts rev-parse --short HEAD > aether-ctp-hosts/publish/exchange/VERSION
+        cp aether-ctp-hosts/publish/exchange/VERSION aether-ctp-hosts/publish/front/VERSION
+        tar -czf ctpsim.tar.gz -C aether-ctp-hosts/publish .
 
     - name: Setup SSH key
       env:
@@ -94,7 +94,7 @@ jobs:
         SSH_PORT: ${{ secrets.CTPSIM_SSH_PORT }}
       run: |
         scp -i ~/.ssh/ctpsim_key -o StrictHostKeyChecking=accept-new -P "${SSH_PORT:-22}" \
-          ctpsim.tar.gz aether-apps/scripts/ctpsim-remote-deploy.ps1 "${SSH_USER}@${SSH_HOST}:${CTPSIM_STAGING}/"
+          ctpsim.tar.gz aether-ctp-hosts/scripts/ctpsim-remote-deploy.ps1 "${SSH_USER}@${SSH_HOST}:${CTPSIM_STAGING}/"
 
     - name: Deploy (stop both -> swap both -> fix binPath -> start exchange -> start front)
       env:

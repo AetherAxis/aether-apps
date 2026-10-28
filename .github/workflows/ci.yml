@@ -17,7 +17,7 @@ jobs:
       # 本仓 checkout 到仓名目录（跨仓 ProjectReference 解析到同级 <dep>/ 目录）
       - uses: actions/checkout@v4
         with:
-          path: aether-apps
+          path: aether-ctp-hosts
       # 跨仓依赖（本地 ProjectReference 拓扑——切 PackageReference 后可移除）
       - uses: actions/checkout@v4
         with:
@@ -57,14 +57,14 @@ jobs:
       - name: Configure GitHub Packages credentials
         run: >
           dotnet nuget update source github
-          --configfile aether-apps/nuget.config
+          --configfile aether-ctp-hosts/nuget.config
           --username AetherAxis
           --password ${{ secrets.GITHUB_TOKEN }}
           --store-password-in-clear-text
 
       - name: Build
-        run: dotnet build Aether.Apps.slnx -c Release
-        working-directory: aether-apps
+        run: dotnet build Aether.CtpHosts.slnx -c Release
+        working-directory: aether-ctp-hosts
 
       # 依赖审计：组合根会把 ⑥ Lean 的传递依赖一并拉进来，钉版本是本仓自己的责任
       # （NuGet 审计按项目还原图算，不因为上游 project reference 已钉就放过本仓）。
@@ -80,10 +80,10 @@ jobs:
             cat /tmp/audit-bad.txt
             exit 1
           fi
-        working-directory: aether-apps
+        working-directory: aether-ctp-hosts
 
       # 2 例 = algorithms/ 交易所 bot 策略源（market-maker/noise-taker）对 Runtime.Lean 编译器的锁定。
       # 钱包 CLI 的 10 例回归随虚拟币线迁到 ⑯ aether-coin（本仓不再覆盖）。
       - name: Test
-        run: dotnet test Aether.Apps.slnx -c Release --no-build
-        working-directory: aether-apps
+        run: dotnet test Aether.CtpHosts.slnx -c Release --no-build
+        working-directory: aether-ctp-hosts

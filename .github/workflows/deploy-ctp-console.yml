@@ -28,7 +28,7 @@ jobs:
     steps:
     - uses: actions/checkout@v4
       with:
-        path: aether-apps
+        path: aether-ctp-hosts
     - uses: actions/checkout@v4
       with:
         repository: AetherAxis/aether-exchange
@@ -66,30 +66,30 @@ jobs:
     - name: Publish (self-contained win-x64)
       run: |
         dotnet publish Aether.CtpConsole -c Release --self-contained true --runtime win-x64 -o ./publish/console
-      working-directory: aether-apps
+      working-directory: aether-ctp-hosts
 
     - name: Bundle (LeanData 最小子集 + labs 算法模板 + 实例 config 模板 + VERSION stamp + tar)
       run: |
         # LeanData 最小子集（Lean 引擎 handler 装配必需——LiveTradingRealTimeHandler 装配缺它会
         # DirectoryNotFoundException，monorepo 时代 2026-10-12 实测踩中）：源 aether-trading/LeanData
         #（随 aether-trading 仓分发；打包回退 <exe>/LeanData——BacktestEnvironment 的设计）
-        mkdir -p aether-apps/publish/console/LeanData/market-hours aether-apps/publish/console/LeanData/symbol-properties
-        cp -r aether-trading/LeanData/market-hours/. aether-apps/publish/console/LeanData/market-hours/
-        cp -r aether-trading/LeanData/symbol-properties/. aether-apps/publish/console/LeanData/symbol-properties/
+        mkdir -p aether-ctp-hosts/publish/console/LeanData/market-hours aether-ctp-hosts/publish/console/LeanData/symbol-properties
+        cp -r aether-trading/LeanData/market-hours/. aether-ctp-hosts/publish/console/LeanData/market-hours/
+        cp -r aether-trading/LeanData/symbol-properties/. aether-ctp-hosts/publish/console/LeanData/symbol-properties/
         # labs 模板：算法笔记的仓库分发副本（远端部署覆盖拷贝进实例目录——algorithms/ 是权威）
-        mkdir -p aether-apps/publish/console/labs/leanalgorithms
-        cp aether-apps/algorithms/*.lean.cs aether-apps/publish/console/labs/leanalgorithms/
+        mkdir -p aether-ctp-hosts/publish/console/labs/leanalgorithms
+        cp aether-ctp-hosts/algorithms/*.lean.cs aether-ctp-hosts/publish/console/labs/leanalgorithms/
         # 实例 config 模板（预填默认凭据——**账户名 = 密码**，服务器本机前置 127.0.0.1——部署后
         # 远端脚本拷进不存在的实例目录 = 开箱即跑；实例 config.json 已存在则永不被覆盖（用户改过的密保留）。
         # 注意公网开放 + 默认弱口令：登录失败 5 次锁 60s（交易所防爆破），想改密直接编辑实例 config.json）
         for inst in botmm botnoise; do
           printf '{"defaultProfile":"%s","labs":null,"data":null,"profiles":{"%s":{"front":"tcp://127.0.0.1:17801","mdFront":"tcp://127.0.0.1:17802","user":"%s","password":"%s","broker":"9999","appId":"simnow_client_test","authCode":"0000000000000000"}}}' \
-            "$inst" "$inst" "$inst" "$inst" > "aether-apps/publish/console/config.$inst.json"
+            "$inst" "$inst" "$inst" "$inst" > "aether-ctp-hosts/publish/console/config.$inst.json"
         done
-        git -C aether-apps rev-parse --short HEAD > aether-apps/publish/console/VERSION
+        git -C aether-ctp-hosts rev-parse --short HEAD > aether-ctp-hosts/publish/console/VERSION
         # tar 根 = publish/console 的**内容**（-C publish/console .）——解压到 $Root\publish 后
         # 直接是 exe/labs/VERSION（monorepo 时代实测：多套一层目录会让远端 Copy-Item 找不到路径）
-        tar -czf ctp-console.tar.gz -C aether-apps/publish/console .
+        tar -czf ctp-console.tar.gz -C aether-ctp-hosts/publish/console .
 
     - name: Setup SSH key
       env:
@@ -106,7 +106,7 @@ jobs:
         SSH_PORT: ${{ secrets.CTPSIM_SSH_PORT }}
       run: |
         scp -i ~/.ssh/ctpsim_key -o StrictHostKeyChecking=accept-new -P "${SSH_PORT:-22}" \
-          ctp-console.tar.gz aether-apps/scripts/ctp-console-remote-deploy.ps1 "${SSH_USER}@${SSH_HOST}:${CTP_CONSOLE_STAGING}/"
+          ctp-console.tar.gz aether-ctp-hosts/scripts/ctp-console-remote-deploy.ps1 "${SSH_USER}@${SSH_HOST}:${CTP_CONSOLE_STAGING}/"
 
     - name: Deploy (swap publish -> ensure instances; no services to restart)
       env:

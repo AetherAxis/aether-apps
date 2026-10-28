@@ -4,5 +4,5 @@
   <Project Path="Aether.CtpFront.Host/Aether.CtpFront.Host.csproj" />
   <Project Path="Aether.Exchange.Host/Aether.Exchange.Host.csproj" />
   <Project Path="Aether.CtpConsole/Aether.CtpConsole.csproj" />
-  <Project Path="tests/Aether.Apps.Tests/Aether.Apps.Tests.csproj" />
+  <Project Path="tests/Aether.CtpHosts.Tests/Aether.CtpHosts.Tests.csproj" />
 </Solution>

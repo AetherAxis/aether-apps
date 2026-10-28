@@ -4,7 +4,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 
 // ── CTP 仿真前置服务器（独立服务端进程——2026-10-05 起与交易所分离，真实世界对齐）───────────
-// 单独起前置：dotnet run --project aether-apps/Aether.CtpFront.Host（交易所须先起/随后起均可——
+// 单独起前置：dotnet run --project aether-ctp-hosts/Aether.CtpFront.Host（交易所须先起/随后起均可——
 // 本进程监听即起，交易所不在时每个客户端会话在登录时诚实失败关连接；启动 banner 后台探活直到连上）。
 // 客户端（Aether 桌面 app）一律官方 SDK 链路：期货页登录窗口前置地址填 tcp://127.0.0.1:17801/17802——
 // 与连 SimNow 完全同形；第三方 CTP 软件亦可直连（协议适配层）。

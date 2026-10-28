@@ -1,4 +1,4 @@
-# Aether.Apps 设计说明
+# Aether.CtpHosts 设计说明
 
 > 写「怎么设计 / 为什么这样设计 / 还能往哪升级」。工作区边界与迁移决策以根 `MIGRATION.md` 为准。
 
@@ -49,7 +49,7 @@
 
 - 服务链：Node → Exchange（带 seed 才接桥）→ Front；充值/提币见 ⑯ `aether-coin/doc/funding-runbook.md`。
 - bot：实例内 `--profile <名> --run-strategy market-maker <合约> --real --max-volume 1`；先 JSON-RPC 清场再等会话≤90s。
-- 验证：`dotnet test Aether.Apps.slnx` = 2 例（编译 + `IsAssignableFrom QCAlgorithm`）；CI 先 build 再 `--no-build` test。
+- 验证：`dotnet test Aether.CtpHosts.slnx` = 2 例（编译 + `IsAssignableFrom QCAlgorithm`）；CI 先 build 再 `--no-build` test。
 - 部署：`deploy-ctpsim`（两服务）、`deploy-ctp-console`（publish + 实例），均手动。链三件套的 `deploy-ledger` 随虚拟币线迁到 ⑯ `aether-coin`（2026-10-27）。
 - 部署脚本是**服务 env 的唯一权威**（步骤 4.6，每次运行钉定）：交易所 `AETHER_CTP_SIM_ADDR=0.0.0.0:17800`
   （外部前置可直连，本地调试用）、前置 `AETHER_CTP_EXCHANGE_ADDR=127.0.0.1:17800`（同机走回环）。

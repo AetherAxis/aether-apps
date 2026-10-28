@@ -18,7 +18,7 @@ using Microsoft.Extensions.Logging;
 //
 // 用法（配置档案——推荐）：前置/凭据存 ~/.aether/ctp-console/config.json 的档案（首次启动生成模板），
 //   之后只需 --profile <名>；命令行参数逐项覆盖档案。
-//   dotnet run --project aether-apps/Aether.CtpConsole -- --profile botmm
+//   dotnet run --project aether-ctp-hosts/Aether.CtpConsole -- --profile botmm
 //   （也可全命令行：--front tcp://x:17801 --md-front tcp://x:17802 --user xx --pass xx）
 //
 // **一个目录一个完整实例**（2026-10-11 用户定调）：config.json / labs/ / ctp.db / lean-algo-cache
