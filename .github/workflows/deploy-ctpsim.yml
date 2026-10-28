@@ -29,6 +29,7 @@ env:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     steps:
     # 新仓/改名后 Secrets 不随仓迁移（2026-10-28 ⑯ 拆出后实测：新仓一个都没有）。
     # 空值一路走到 scp 才炸的报错极难读（目标会变成 "user@"），所以在任何动作之前先断言。
@@ -97,6 +98,21 @@ jobs:
         cp aether-ctp-hosts/publish/exchange/VERSION aether-ctp-hosts/publish/front/VERSION
         tar -czf ctpsim.tar.gz -C aether-ctp-hosts/publish .
 
+    # SSH 通了但数据通道卡死过一次（2026-10-28：认证通过、17 分钟零字节、目的地没有文件）。
+    # 任何一步没有超时都可能挂到 GitHub 的 6 小时上限，所以：先探 22 端口，失败即退出（fail fast）。
+    - name: Probe SSH reachability (fail fast)
+      shell: bash
+      env:
+        SSH_HOST: ${{ secrets.CTPSIM_SSH_HOST }}
+      run: |
+        for i in 1 2 3; do
+          if timeout 10 bash -c "echo > /dev/tcp/${SSH_HOST}/22" 2>/dev/null; then
+            echo "TCP 22 可达 ${SSH_HOST}"; exit 0
+          fi
+          echo "第 $i 次探测 :22 失败，5s 后重试"; sleep 5
+        done
+        echo "::error::TCP 22 连不上 ${SSH_HOST} —— 安全检查组/防火墙挡了 GitHub runner 的出站，或 sshd 未监听（不是代码问题）"
+        exit 1
     - name: Setup SSH key
       env:
         SSH_KEY: ${{ secrets.CTPSIM_SSH_KEY }}
@@ -111,7 +127,7 @@ jobs:
         SSH_USER: ${{ secrets.CTPSIM_SSH_USER }}
         SSH_PORT: ${{ secrets.CTPSIM_SSH_PORT }}
       run: |
-        scp -i ~/.ssh/ctpsim_key -o StrictHostKeyChecking=accept-new -P "${SSH_PORT:-22}" \
+        scp -i ~/.ssh/ctpsim_key -o StrictHostKeyChecking=accept-new -o ConnectTimeout=20 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 -P "${SSH_PORT:-22}" \
           ctpsim.tar.gz aether-ctp-hosts/scripts/ctpsim-remote-deploy.ps1 "${SSH_USER}@${SSH_HOST}:${CTPSIM_STAGING}/"
 
     - name: Deploy (stop both -> swap both -> fix binPath -> start exchange -> start front)
@@ -120,7 +136,7 @@ jobs:
         SSH_USER: ${{ secrets.CTPSIM_SSH_USER }}
         SSH_PORT: ${{ secrets.CTPSIM_SSH_PORT }}
       run: |
-        ssh -i ~/.ssh/ctpsim_key -o StrictHostKeyChecking=accept-new -p "${SSH_PORT:-22}" \
+        ssh -i ~/.ssh/ctpsim_key -o StrictHostKeyChecking=accept-new -o ConnectTimeout=20 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 -p "${SSH_PORT:-22}" \
           "${SSH_USER}@${SSH_HOST}" \
           "powershell -NoProfile -ExecutionPolicy Bypass -File ${CTPSIM_STAGING}/ctpsim-remote-deploy.ps1"
         # Windows OpenSSH 默认 shell 是 cmd.exe——显式起 powershell 跑脚本；这是唯一远程命令，零嵌套引号
