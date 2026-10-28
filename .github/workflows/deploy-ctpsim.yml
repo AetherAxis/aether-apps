@@ -1,5 +1,9 @@
 name: Deploy CTP Sim Stack
 
+# ⚠ 上线请用 scripts/deploy-from-local.sh（本机直传），本 workflow 暂只作构建契约：
+#   2026-10-28 实测 GitHub runner → 服务器上传 54MB 跑 23 分钟仍未完（被硬超时杀掉），本机同一条 34s。
+#   workflow 逻辑本身没坏——链路是瓶颈；带宽恢复后可继续用。
+
 # CTP 仿真栈两服务部署（AetherAxis 拆仓版，2026-10-20——自 monorepo deploy-ctpsim.yml 迁移改造）：
 #   AetherCtpExchange = 交易所（Aether.Exchange.Host：撮合核心 + JSON-RPC 127.0.0.1:17800）
 #   AetherCtpFront    = 前置（Aether.CtpFront.Host：CTP 线协议双腿 17801/17802 → RPC 连交易所）

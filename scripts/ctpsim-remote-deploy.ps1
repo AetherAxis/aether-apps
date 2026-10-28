@@ -169,7 +169,11 @@ function Set-ServiceEnv([string]$svc, [hashtable]$wanted) {
     $merged = @()
     foreach ($k in ($map.Keys | Sort-Object)) { $merged += "$k=$($map[$k])" }
     New-ItemProperty -Path $key -Name Environment -PropertyType MultiString -Value ([string[]]$merged) -Force | Out-Null
-    Info "$svc 环境：$($merged -join ' | ')"
+    # 回显脱敏：交易所 env 里有 AETHER_LEDGER_CUSTODY_SEED（托管钱包钥匙）——原样打印会留进 CI 日志
+    $shown = foreach ($kv in $merged) {
+        if ($kv -match '^(?<k>[^=]*(SEED|KEY|PASSWORD|TOKEN|SECRET)[^=]*)=.*$') { "$($matches['k'])=<已隐藏>" } else { $kv }
+    }
+    Info "$svc 环境：$($shown -join ' | ')"
 }
 Set-ServiceEnv $ExchangeService @{ 'AETHER_CTP_SIM_ADDR' = '0.0.0.0:17800' }
 Set-ServiceEnv $FrontService @{ 'AETHER_CTP_EXCHANGE_ADDR' = '127.0.0.1:17800' }

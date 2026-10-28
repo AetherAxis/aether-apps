@@ -65,6 +65,7 @@ dotnet run --project ~/Desktop/AetherAxis/aether-ctp-hosts/Aether.CtpConsole \
 - `deploy-ctp-console`：console bot——publish 整替换 + 实例目录形态（实例 config.json 永不覆盖；labs/leanalgorithms 每次覆盖，`algorithms/` 是权威）
 - `deploy-ledger`：**2026-10-27 起随虚拟币线迁到 ⑯ `aether-coin-hosts`**（本仓不再构建链三件套）
 - 均 workflow_dispatch 手动触发：多仓 paths 联动已断——**依赖仓 push 后须手动 Run workflow 重新部署**
+- **上线走 `scripts/deploy-from-local.sh ctpsim|console`（本机直传）**：2026-10-28 实测 GitHub runner → 服务器上传 54MB 需 23 分钟以上（本机 34s），CI 的 deploy workflow 暂只当构建契约（`deploy-dryrun.yml` 每 push 验 publish/bundle 与远端契约），带宽恢复后可切回
 
 ## 构建与测试
 
