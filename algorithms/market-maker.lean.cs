@@ -86,12 +86,18 @@ public class MarketMakerAlgo : LeanAlgorithmBase
         // （force=true 绕过节流）。
         Schedule.On(DateRules.EveryDay(), TimeRules.Every(TimeSpan.FromSeconds(30)), () => RefreshQuotes(force: true));
         BotLog($"[MM] 初始化 {_symbol.Value}: 上下各{_levels}档 点差{_spreadTicks}tick 档距{_levelStepTicks}tick 单档{_quoteVolume}手 仓限±{_positionCap} 最小报价间隔{_minQuoteIntervalMs}ms");
+        // 仓位来源自检（2026-10-29）：两侧挂腿由 Portfolio 净持仓算预算——若持仓视图与实际账户不符，
+        // 会表现为「一侧永不挂单」（例：以为空头触限 ⇒ 预算 ≤0 ⇒ 卖侧静默消失 ⇒ 簿上无卖盘 ⇒ 永无成交）。
+        // 这行把 Lean 的持仓视图摊到日志里，与「账户查询」的真值直接对照。
+        BotLog($"[MM] 初始持仓视图 Portfolio={Portfolio[_symbol].Quantity}（与账户查询对照）");
     }
 
     /// <summary>最近锚定的中心价：只有真实 last 偏离它超过 RepriceThresholdTicks 才重定档。</summary>
     private decimal _anchoredLast;
     /// <summary>重定锚阈值（tick 数）：真实 last 偏离当前锚点达到这个幅度，才整条阶梯平移。</summary>
     private int _repriceThresholdTicks;
+    /// <summary>上次打印仓位视图的墙钟时刻（诊断节流）。</summary>
+    private DateTime _lastPosLogUtc = DateTime.MinValue;
 
     public override void OnData(Slice slice)
     {
@@ -125,6 +131,12 @@ public class MarketMakerAlgo : LeanAlgorithmBase
         // native 侧积压后表现成「同一笔 tick 反复重投」、bot 日志 30 秒涨到 160MB）。
         // 节流只丢「中间态」：下一次允许的报价始终用最新 `_last`，深度不会停在旧价位。
         var now = DateTime.UtcNow;
+        // 仓位视图节流打印（15s 一次，见 Initialize 注释）：盯「一侧预算是否被持仓视图吃掉」。
+        if ((now - _lastPosLogUtc).TotalSeconds >= 15)
+        {
+            _lastPosLogUtc = now;
+            BotLog($"[MM] 仓位视图 Portfolio={pos} 在挂 买{_bidLegs.Count}/卖{_askLegs.Count} 预算 买{_positionCap - pos}/卖{_positionCap + pos}");
+        }
         var throttled = false;
         if (!force)
         {
