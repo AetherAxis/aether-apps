@@ -118,6 +118,8 @@ foreach ($n in 'botmm','botnoise') { Start-ScheduledTask "AetherBotDirect-$n" }
 
 退役动作：停 `AetherBotDirect-*` 并删除任务 → `Enable-ScheduledTask AetherBot-*` + 启动 → `deploy-from-local.sh console` 重推 console bot（可选）→ 删除 `C:\Aether\direct-bot` 与 `Aether.DirectBot.Console` 工程。
 
+> 上面三条怎么落地、按什么顺序做，见 `../../ctp-net-client/doc/session-lifecycle.md`（会话状态机 + epoch、在途账本与对账、240 断连的三种消除路径、对真柜台的待实测清单）。
+
 ## 9. 自检命令
 
 ```powershell
