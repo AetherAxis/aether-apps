@@ -8,6 +8,7 @@
 # 用法：
 #   scripts/deploy-from-local.sh ctpsim     # 交易所 + 前置（停两个服务，撮合中断数十秒）
 #   scripts/deploy-from-local.sh console    # console bot（不停任何服务；实例 config 不被覆盖）
+#   scripts/deploy-from-local.sh direct     # **临时旁路**直连 bot（bot 直连交易所绕开前置；不动任何任务）
 #
 # 环境变量（都有默认值）：
 #   AETHER_DEPLOY_HOST  默认 117.72.186.128
@@ -20,8 +21,8 @@ set -euo pipefail
 
 what=${1:-}
 case "$what" in
-    ctpsim|console) ;;
-    *) echo "用法: $0 ctpsim|console" >&2; exit 2 ;;
+    ctpsim|console|direct) ;;
+    *) echo "用法: $0 ctpsim|console|direct" >&2; exit 2 ;;
 esac
 
 HOST=${AETHER_DEPLOY_HOST:-117.72.186.128}
@@ -73,6 +74,26 @@ console)
     # tar 根 = console 内容的平铺（多套一层远端实例同步就找不到路径）
     tar -czf "$TMP/$TAR_NAME" -C "$TMP/console" .
     echo "  停服影响：无（不留驻服务；正在跑的实例继续用旧内存程序）"
+    ;;
+direct)
+    # **临时旁路**（2026-10-29）：bot 直连交易所 :17800，绕开前置。前置重连认证修好后本分支退役。
+    # 与 console 的差异：不引 ctp-net-client（无官方 CTP SDK / 无 frameworks 拷贝），程序本体更小。
+    STAGING='C:/Aether/direct-bot-staging'; TAR_NAME=direct-bot.tar.gz; REMOTE_SCRIPT=directbot-remote-deploy.ps1
+    echo "[deploy] 构建 win-x64 自包含（版本 $VERSION）"
+    ( cd "$ROOT" && publish Aether.DirectBot.Console direct )
+    mkdir -p "$TMP/direct/LeanData/market-hours" "$TMP/direct/LeanData/symbol-properties" \
+             "$TMP/direct/labs/leanalgorithms"
+    cp -r "$WS/aether-trading/LeanData/market-hours/." "$TMP/direct/LeanData/market-hours/"
+    cp -r "$WS/aether-trading/LeanData/symbol-properties/." "$TMP/direct/LeanData/symbol-properties/"
+    cp "$ROOT"/algorithms/*.lean.cs "$TMP/direct/labs/leanalgorithms/"
+    # 实例模板：只带账户/密码/broker（直连实例不读前置字段）。远端优先沿用 CTP 版实例的凭据。
+    for inst in botmm botnoise; do
+        printf '{"defaultProfile":"%s","labs":null,"data":null,"profiles":{"%s":{"user":"%s","password":"%s","broker":"9999"}}}' \
+            "$inst" "$inst" "$inst" "$inst" > "$TMP/direct/config.$inst.json"
+    done
+    printf '%s\n' "$VERSION" > "$TMP/direct/VERSION"
+    tar -czf "$TMP/$TAR_NAME" -C "$TMP/direct" .
+    echo "  停服影响：无（不动任何计划任务——切换 bot 是显式动作）"
     ;;
 esac
 

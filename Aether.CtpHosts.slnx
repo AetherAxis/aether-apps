@@ -4,5 +4,7 @@
   <Project Path="Aether.CtpFront.Host/Aether.CtpFront.Host.csproj" />
   <Project Path="Aether.Exchange.Host/Aether.Exchange.Host.csproj" />
   <Project Path="Aether.CtpConsole/Aether.CtpConsole.csproj" />
+  <!-- 临时旁路客户端（bot 直连交易所，绕开前置；前置重连认证修复后退役）→ doc/direct-bot-bypass.md -->
+  <Project Path="Aether.DirectBot.Console/Aether.DirectBot.Console.csproj" />
   <Project Path="tests/Aether.CtpHosts.Tests/Aether.CtpHosts.Tests.csproj" />
 </Solution>

@@ -1,0 +1,39 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AssemblyName>Aether.DirectBot.Console</AssemblyName>
+    <RootNamespace>Aether.DirectBot.Console</RootNamespace>
+  </PropertyGroup>
+
+  <!-- **临时旁路客户端**（2026-10-29）：bot 绕过 CTP 前置直连交易所 :17800。
+       不为临时宿主做跨仓搬迁，故直接引 ctp-net-front 取 RemoteCtpSession（SimRpcClient → ICtpSession
+       适配器，前置自己每连接一份）——前置与直连 bot 是同一适配器的两个消费者。前置重连认证修好、
+       bot 回归 Aether.CtpConsole 后，本目录连同这条引用一并删除。
+       条件：ctp-net-front 无原生依赖（只引 contracts + exchange.Rpc），故本客户端不需要官方 CTP SDK。 -->
+  <ItemGroup>
+    <!-- Lean 实盘引擎的 ILogger → console -->
+    <PackageReference Include="Microsoft.Extensions.Logging.Console" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- 交易所 JSON-RPC（SimRpcClient 由 Aether.Exchange.Rpc 提供，经 ctp-net-front 传递引用） -->
+    <ProjectReference Include="..\..\aether-exchange\src\Aether.Exchange.Rpc\Aether.Exchange.Rpc.csproj" />
+    <!-- ICtpSession 的 RPC 实现（RemoteCtpSession / CtpDomainMapper） -->
+    <ProjectReference Include="..\..\ctp-net-front\src\Ctp.Net.Front\Ctp.Net.Front.csproj" />
+    <!-- 实盘策略引擎端口 + Lean 实现（ILiveTradingRuntime / LeanAlgorithmRegistry / 脚本编译） -->
+    <ProjectReference Include="..\..\aether-trading\src\Aether.Trading.Runtime.Domain\Aether.Trading.Runtime.Domain.csproj" />
+    <ProjectReference Include="..\..\aether-trading\src\Aether.Trading.Runtime.Lean\Aether.Trading.Runtime.Lean.csproj" />
+  </ItemGroup>
+
+  <!-- LeanData 最小子集（market-hours + symbol-properties）：Lean 引擎 handler 装配必需
+       （BacktestEnvironment.LocateLeanDataFolder 的 <exe>/LeanData fallback 命中）。与 CtpConsole 同款。 -->
+  <ItemGroup>
+    <Content Include="..\..\aether-trading\LeanData\**\*" CopyToOutputDirectory="PreserveNewest"
+             Link="LeanData\%(RecursiveDir)%(Filename)%(Extension)" />
+  </ItemGroup>
+
+</Project>
