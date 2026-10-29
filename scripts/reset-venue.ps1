@@ -1,4 +1,4 @@
-param([string]$Balance = '1000000', [switch]$DryRun)
+param([switch]$DryRun)
 # Venue reset (2026-10-29, authorized by the operator).
 # WHY: the sim venue's stored state was corrupt -- 5.4e4 zombie GFD buy orders (106k lots) left behind by
 # cancels that were lost when the CTP front force-closed the trader socket every 240 pushes, plus two bot
@@ -20,24 +20,27 @@ $dbDir  = 'C:\Aether\ctpsim-data\venue'
 $stamp  = Get-Date -Format 'yyyyMMdd-HHmmss'
 $bakDir = Join-Path $dbDir "backup-$stamp"
 
-# 1) exchange service env: add AETHER_CTP_SIM_BALANCE so NEW accounts are funded (default is 0).
-#    Existing entries are carried over verbatim -- the list also holds the ledger seed; we never print it.
+# 1) exchange service env: the opening-bonus faucet AETHER_CTP_SIM_BALANCE no longer exists in the platform
+#    (removed 2026-10-29). Cash can ONLY come from real on-chain AQ transfers reconciled by the host
+#    (LedgerCashRail -> CreditQuoteDeposit); a brand-new account starts at exactly 0.
+#    So this step STRIPS the variable if an earlier run left it behind. Existing entries are carried over
+#    verbatim -- the list also holds the ledger seed; we never print it.
 $key = 'HKLM:\SYSTEM\CurrentControlSet\Services\AetherCtpExchange'
 $cur = (Get-ItemProperty -Path $key).Environment
 if ($null -eq $cur) { $cur = @() }
 $new = New-Object System.Collections.Generic.List[string]
-$has = $false
+$dropped = 0
 foreach ($e in $cur) {
-    if ($e -like 'AETHER_CTP_SIM_BALANCE=*') { $new.Add("AETHER_CTP_SIM_BALANCE=$Balance"); $has = $true }
+    if ($e -like 'AETHER_CTP_SIM_BALANCE=*') { $dropped++ }
     else { $new.Add([string]$e) }
 }
-if (-not $has) { $new.Add("AETHER_CTP_SIM_BALANCE=$Balance") }
-if ($DryRun) { I ("would write {0} env entries (balance {1})" -f $new.Count, $Balance) }
+if ($DryRun) { I ("would write {0} env entries (faucet entries dropped: {1})" -f $new.Count, $dropped) }
+elseif ($dropped -eq 0) { I 'service env: no faucet entry present, left untouched' }
 else {
     Set-ItemProperty -Path $key -Name Environment -Value ([string[]]$new.ToArray())
     $check = (Get-ItemProperty -Path $key).Environment
-    I ("service env rewritten: {0} entries, AETHER_CTP_SIM_BALANCE present = {1}" -f `
-        $check.Count, [bool]($check -like 'AETHER_CTP_SIM_BALANCE=*'))
+    I ("service env rewritten: {0} entries, faucet entries dropped = {1}, still present = {2}" -f `
+        $check.Count, $dropped, [bool]($check -like 'AETHER_CTP_SIM_BALANCE=*'))
 }
 
 # 2) stop the direct bots (they would reconnect to a half-reset venue otherwise)

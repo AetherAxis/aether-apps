@@ -8,7 +8,7 @@
 
 | 宿主 | 说明 |
 |---|---|
-| `Aether.Exchange.Host` | 仿真交易所（:17800；资金 = 链上 AQ 充值对账——见「资金机制」；`AETHER_CTP_SIM_BALANCE` 仅沙盒水龙头） |
+| `Aether.Exchange.Host` | 仿真交易所（:17800；资金 = 链上 AQ 充值对账，开户余额恒 0、无赠金——见「资金机制」） |
 | `Aether.CtpFront.Host` | CTP 线协议前置（交易 :17801 / 行情 :17802，连 :17800） |
 | `Aether.CtpConsole` | console 算法 bot：Lean 实盘引擎 + CTP SDK 会话 + REPL——无 GUI 依赖，SSH 挂机/无人值守/轻量手动交易 |
 
@@ -57,7 +57,7 @@ dotnet run --project ~/Desktop/AetherAxis/aether-ctp-hosts/Aether.CtpConsole \
 
 ## 资金机制（比特币模型）
 
-新账户初始资金默认 0——场内现金**只能从链上 AQ 充值进来**（1 AQ = 1 现金）。结算轨道 opt-in：`AETHER_SETTLEMENT_RAIL=ledger-aq`（不设时看 `AETHER_LEDGER_CUSTODY_SEED`——设了才接链，否则 `none`，交易所照常跑）+ `AETHER_LEDGER_NODE_ADDR`（默认 127.0.0.1:17805）；接上后 `LedgerCashRail` 每秒对账（链侧 AQ IOU ↔ sim_quote_minted 台账：充值入现金 / 提现扣现金）。`AETHER_CTP_SIM_BALANCE` 仅纯期货开发沙盒（不起链桥、测策略）的水龙头。操作步骤（充值 / 提币 / bot 实例充 AQ / 本地带资金 E2E）见 ⑯ [`aether-coin-hosts/doc/funding-runbook.md`](../aether-coin-hosts/doc/funding-runbook.md)。
+新账户开户余额**恒为 0**（2026-10-29 起「初始资金 / 开户赠金」已从平台删除——没有参数、没有环境变量）——场内现金**只能从链上 AQ 真实转账进来**（1 AQ = 1 现金）。结算轨道 opt-in：`AETHER_SETTLEMENT_RAIL=ledger-aq`（不设时看 `AETHER_LEDGER_CUSTODY_SEED`——设了才接链，否则 `none`，交易所照常跑）+ `AETHER_LEDGER_NODE_ADDR`（默认 127.0.0.1:17805）；接上后 `LedgerCashRail` 每秒对账（链侧 AQ IOU ↔ sim_quote_minted 台账：充值入现金 / 提现扣现金）。要资金只有一条路：往该账户真实转 AQ（宿主对账入账）；测试/开发需要资金也走同一个 `CreditQuoteDeposit` 入口，不再有沙盒水龙头。操作步骤（充值 / 提币 / bot 实例充 AQ / 本地带资金 E2E）见 ⑯ [`aether-coin-hosts/doc/funding-runbook.md`](../aether-coin-hosts/doc/funding-runbook.md)。
 
 ## 服务器部署
 

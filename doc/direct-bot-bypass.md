@@ -33,7 +33,7 @@ services.AddLeanAlgorithmServices(dataDir);
 ```
 
 - **240 帧强断与重连认证这两条限制不经过旁路**：它们在 `CtpFrontSession`（前置交易腿）里，直连会话没有这一层，因此不会周期性掉线。
-- 开户资金：交易所侧 `AETHER_CTP_SIM_BALANCE` 默认 **0**，只对**该值生效之后新建的账户**起作用（`SimOptions.InitialBalance`）。老账户靠库里已持久化的余额，新账户必须有这个变量。
+- 开户资金：**开户余额恒 0，没有任何开关**（2026-10-29 起「初始资金 / 开户赠金」`SimOptions.InitialBalance` 与 `AETHER_CTP_SIM_BALANCE` 已从代码删除）。账户里的钱只来自链上 AQ 真实转账——宿主 `LedgerCashRail` 对账后经 `CreditQuoteDeposit` 入账（1 AQ = 1 现金）。**新账户不充值就一分钱也没有，开不了仓**；这是刻意的，别再加回赠金。
 
 ## 3. 命名与共存边界（重要）
 
@@ -70,7 +70,7 @@ foreach ($n in 'botmm','botnoise') { Start-ScheduledTask "AetherBotDirect-$n" }
 | 信号 | 位置 | 判读 |
 |---|---|---|
 | 心跳（每 10s 原子重写） | `C:\Aether\direct-bot\<实例>\directbot.heartbeat.json` | `account / engine / ticks / orders / trades / lastTickAtUtc / updatedAtUtc / pid / exchange` |
-| 交易所日志 | `C:\Aether\ctpsim-data\ctpsim-exchange.log` | 启动横幅会打印账户数、上市合约数、**新账户初始资金** |
+| 交易所日志 | `C:\Aether\ctpsim-data\ctpsim-exchange.log` | 启动横幅会打印账户数、上市合约数、**开户余额恒 0（现金只能来自链上 AQ 充值）** |
 | watchdog v2 | `C:\Aether\build-tools\watchdog.ps1`（任务 `AetherBot-watchdog`） | 直连家族判活 = 心跳新鲜度 + `engine -ne 'Running'`；CTP 家族只在其任务 `Running` 时才管 |
 
 **默认不写日志**（2026-10-29 教训：客户端 tick 风暴把 8.6GB/天 写进磁盘、拖死整机 I/O）。排查时临时把 launcher 的 `>NUL 2>&1` 改成 `>> 实例目录\probe.log 2>&1`，**用完改回**。编码陷阱：bot 的 stdout 是 **GBK**，`CtpConsole` 的探针输出是 **UTF-8**——解错编码只会得到乱码，不会报错。
@@ -90,7 +90,7 @@ foreach ($n in 'botmm','botnoise') { Start-ScheduledTask "AetherBotDirect-$n" }
 
 **处置**：`scripts/reset-venue.ps1`（会先备份、备份 <100KB 拒绝删除）：
 
-1. 给交易所**服务**加 `AETHER_CTP_SIM_BALANCE`（默认 0 ⇒ 新账户无资金，无法开仓）；
+1. 交易所服务环境里**不设任何资金变量**（`AETHER_CTP_SIM_BALANCE` 已废；重跑 reset 脚本会顺手把它从服务环境里剔掉）——重置后老账户的现金随库一起清空，新账户开户即 0，谁要开仓谁先真实转 AQ。**bot 不需要人工充值**：它们在链上有真实 AQ（各 300 万），宿主第一轮对账会按 per-account IOU 差额自动 `CreditQuoteDeposit` 入账（`LedgerCashRail`，1 s 一轮）；
 2. 停直连 bot → 停前置 → 停交易所；
 3. 备份 `venue\ctp-sim.db` + `-wal` + `-shm` 到 `venue\backup-<时间戳>`，校验体积后删除；
 4. 起交易所（等 `:17800` 就绪）→ 起前置 → 起 bot（心跳每实例 150s 内必须出现）。

@@ -16,7 +16,6 @@ using Microsoft.Extensions.Hosting;
 //   AETHER_CTP_SIM_ADDR    监听端点（默认 127.0.0.1:17800，格式 [host:]port）——进程分离后交易所
 //                          只服务前置进程（同机 127.0.0.1 即可；服务器部署脚本即此默认，17800 无需对外）
 //   AETHER_CTP_SIM_DB      账本库路径（默认 ~/.aether/ctp-sim.db；与真实 ctp.db 分文件）
-//   AETHER_CTP_SIM_BALANCE 新账户初始资金
 //   AETHER_CTP_SIM_BOARD   上市合约表（逗号分隔合约号；默认 ax001——Aether 币价期货，
 //                          交易所自有品种，非真实期货；自定义 id 经 解析链：精确→品种派生→合成 兜底；坏值容忍回默认）
 //   AETHER_CTP_SIM_LOGIN_MAX_FAILURES / AETHER_CTP_SIM_LOGIN_LOCKOUT_SEC  防爆破（登录锁定）
@@ -96,7 +95,8 @@ internal sealed class ExchangeHostedService(SimTradingCore core, SimRpcServer se
         Log.Line($"[CTP-SIM]   账本：{opts.Core.DatabasePath ?? "纯内存（不落盘）"}");
         if (accounts.Count > 0)
             Log.Line($"[CTP-SIM]   账户 {accounts.Count} 个（{accounts.Count(a => a.HasPassword)} 个已设密码）：{string.Join(",", accounts.Select(a => a.AccountId))}");
-        Log.Line($"[CTP-SIM]   行情 交易所模式：订单簿 + 成交驱动（价格发现归簿）| 做市/噪声 = 外部客户端策略（labs leanalgorithms）| 新账户初始资金 {opts.Core.InitialBalance}");
+        // 资金只来自链上 AQ 真实转账（LedgerCashRail 对账入账）；开户余额恒 0，无任何赠金开关。
+        Log.Line($"[CTP-SIM]   行情 交易所模式：订单簿 + 成交驱动（价格发现归簿）| 做市/噪声 = 外部客户端策略（labs leanalgorithms）| 新账户开户余额恒 0（现金只能来自链上 AQ 充值）");
         Log.Line($"[CTP-SIM]   上市合约 {listed.Count} 个：{string.Join(",", listed.Select(i => i.InstrumentId))}");
         Log.Line("[CTP-SIM] Ctrl+C 退出（账本自动落盘）。前置进程：dotnet run --project aether-ctp-hosts/Aether.CtpFront.Host（连接 127.0.0.1:17800）。");
     }
