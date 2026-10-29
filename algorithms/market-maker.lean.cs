@@ -56,11 +56,20 @@ public class MarketMakerAlgo : LeanAlgorithmBase
         new StrategyParameterDef("QuoteVolume", "单档挂单手数", "5"),
         new StrategyParameterDef("PositionCap", "单边持仓上限（手）", "200"),
         new StrategyParameterDef("MinQuoteIntervalMs", "最小重新报价间隔（毫秒，防自激风暴）", "300"),
+        new StrategyParameterDef("RepriceThresholdTicks", "重定档容忍（last 偏离锚点多少 tick 才整体改挂）", "2"),
     };
 
     public override void Initialize()
     {
         ConfigureFromConfig();
+        // 关掉 Lean 自身的 Trace/Debug 输出（2026-10-29 定案）：默认全量 Trace，每笔单都打
+        // 「Total margin information / New Order Event / OrderEvent()」等几十行，做市商每分钟数百次
+        // 撤挂 ⇒ 日志每小时涨 GB 级，实测把服务器磁盘写满导致整机 I/O 卡死（SSH 握手超时、
+        // 前置端口能连但无响应）。只保留 Error，策略自己的 BotLog 照常输出。
+        // 注意：本版 Lean（2.5.18193）**没有** LoggingLevel 类型、也没有 SetLoggingLevel API——
+        // 2026-10-29 曾误用 SetLoggingLevel 导致整个脚本编译失败（引擎报「未注册的 Lean 算法」），
+        // 只能自己包一层 handler 过滤。BotLog 走 CtpLeanGateway.Log，不经过 LogHandler，不受影响。
+        QuantConnect.Logging.Log.LogHandler = new ErrorOnlyLogHandler(QuantConnect.Logging.Log.LogHandler);
         _symbol = AddCtpData(GetParameter("symbol") ?? "ax001", Resolution.Second);
 
         _priceTick = GetDecimalParam("PriceTick", 0.01m);
@@ -70,6 +79,7 @@ public class MarketMakerAlgo : LeanAlgorithmBase
         _quoteVolume = GetDecimalParam("QuoteVolume", 5m);
         _positionCap = GetDecimalParam("PositionCap", 200m);
         _minQuoteIntervalMs = GetIntParam("MinQuoteIntervalMs", 300);
+        _repriceThresholdTicks = GetIntParam("RepriceThresholdTicks", 2);
         // 兜底重挂（2026-10-18 36h 长跑定案）：算法纯事件驱动（tick→维护）——撤光/吃光挂单后若市场
         // 完全静止（无挂/撤/成事件 ⇒ 无 tick），「下一数据事件补挂」永不发生 ⇒ 簿空自锁、市场假死
         // （实测 MM 撤光后 14h 不补挂、NT 吃陈旧价全作废）。定时器独立于行情，保证静止市场也会恢复深度
@@ -77,6 +87,11 @@ public class MarketMakerAlgo : LeanAlgorithmBase
         Schedule.On(DateRules.EveryDay(), TimeRules.Every(TimeSpan.FromSeconds(30)), () => RefreshQuotes(force: true));
         BotLog($"[MM] 初始化 {_symbol.Value}: 上下各{_levels}档 点差{_spreadTicks}tick 档距{_levelStepTicks}tick 单档{_quoteVolume}手 仓限±{_positionCap} 最小报价间隔{_minQuoteIntervalMs}ms");
     }
+
+    /// <summary>最近锚定的中心价：只有真实 last 偏离它超过 RepriceThresholdTicks 才重定档。</summary>
+    private decimal _anchoredLast;
+    /// <summary>重定锚阈值（tick 数）：真实 last 偏离当前锚点达到这个幅度，才整条阶梯平移。</summary>
+    private int _repriceThresholdTicks;
 
     public override void OnData(Slice slice)
     {
@@ -109,46 +124,69 @@ public class MarketMakerAlgo : LeanAlgorithmBase
         // 不节流时这个回路会在同一毫秒内自我放大（实测：前端每秒被灌几百帧同值快照，客户端
         // native 侧积压后表现成「同一笔 tick 反复重投」、bot 日志 30 秒涨到 160MB）。
         // 节流只丢「中间态」：下一次允许的报价始终用最新 `_last`，深度不会停在旧价位。
+        var now = DateTime.UtcNow;
+        var throttled = false;
         if (!force)
         {
-            var now = DateTime.UtcNow;
-            if ((now - _lastQuoteUtc).TotalMilliseconds < _minQuoteIntervalMs) return;   // 中间态直接丢，下一次用最新 _last
-            _lastQuoteUtc = now;
+            if ((now - _lastQuoteUtc).TotalMilliseconds < _minQuoteIntervalMs) { throttled = true; }
+            else { _lastQuoteUtc = now; }
         }
         else
         {
-            _lastQuoteUtc = DateTime.UtcNow;
+            _lastQuoteUtc = now;
         }
 
         // 超限减仓（自办强平）：市价吃非自有的对手流动性
         if (pos > _positionCap) MarketOrder(_symbol, _positionCap - pos, tag: "超限减仓");
         else if (pos < -_positionCap) MarketOrder(_symbol, -_positionCap - pos, tag: "超限减仓");
 
+        // —— 重定档锚点（2026-10-29 定案）：不为每个 tick 重算阶梯——
+        // 真实 last 偏离锚点不足 RepriceThresholdTicks 就沿用旧锚点，已挂腿一律不动；
+        // 偏离超阈值才换锚点，一次性平移阶梯。实测：未加锚点前 60s 撤挂 ~855 次、成交 22 笔。
+        var anchor = RoundToTick(_last);
+        if (_anchoredLast == 0) _anchoredLast = anchor;
+        else if (!throttled && Math.Abs(anchor - _anchoredLast) >= _repriceThresholdTicks * _priceTick)
+            _anchoredLast = anchor;
+
         var desiredBids = DesiredLevels(bid: true);
         var desiredAsks = DesiredLevels(bid: false);
 
-        RollStaleLegs(_bidLegs, desiredBids, pos >= _positionCap, "买");
-        RollStaleLegs(_askLegs, desiredAsks, pos <= -_positionCap, "卖");
+        RollStaleLegs(_bidLegs, desiredBids, pos >= _positionCap, "买", isBid: true);
+        RollStaleLegs(_askLegs, desiredAsks, pos <= -_positionCap, "卖", isBid: false);
 
         // 补挂预算 = 仓限 − 该向敞口：多头越满买侧越薄，空头越满卖侧越薄
         FillMissingLegs(_bidLegs, desiredBids, _positionCap - pos, isBid: true);
         FillMissingLegs(_askLegs, desiredAsks, _positionCap + pos, isBid: false);
     }
 
-    /// <summary>期望档位价集合（内到外）：last ∓ (SpreadTicks + i×档距)×PriceTick。</summary>
+    /// <summary>期望档位价集合（内到外）：锚点 ∓ (SpreadTicks + i×档距)×PriceTick。</summary>
     private List<decimal> DesiredLevels(bool bid)
     {
         var levels = new List<decimal>(_levels);
         for (var i = 0; i < _levels; i++)
         {
             var offset = (_spreadTicks + i * _levelStepTicks) * _priceTick;
-            levels.Add(RoundToTick(bid ? _last - offset : _last + offset));
+            levels.Add(RoundToTick(bid ? _anchoredLast - offset : _anchoredLast + offset));
         }
         return levels;
     }
 
+    /// <summary>
+    /// 容忍带（2026-10-29 定案）：腿满足下列任一条件才撤——
+    /// ① 价格站到了锚点的**错误一侧**（买单 ≥ 锚、卖单 ≤ 锚，说明已不是做市档位）；
+    /// ② 价格偏离锚点 ≥ (SpreadTicks + Levels + 2)×tick（彻底脱离做市区）。
+    /// 小幅漂动（last 在锚点 ± RepriceThresholdTicks 内）已挂腿一律保留。
+    /// </summary>
+    private bool ShouldRoll(decimal price, bool isBid)
+    {
+        if (isBid && price >= _anchoredLast) return true;
+        if (!isBid && price <= _anchoredLast) return true;
+        var deadBand = (_spreadTicks + _levels + 2) * _priceTick;
+        return Math.Abs(price - _anchoredLast) >= deadBand;
+    }
+
     /// <summary>撤移出带宽或触限的腿。撤单 pending 的腿不重复撤（等终态事件清根）。</summary>
-    private void RollStaleLegs(List<OrderTicket> legs, List<decimal> desired, bool capped, string side)
+    private void RollStaleLegs(List<OrderTicket> legs, List<decimal> desired, bool capped, string side, bool isBid)
     {
         // 先挑、后撤（不要边遍历边撤）：leg.Cancel() 可能**同步**派发 OnOrderEvent，终态分支会对
         // 同一个 legs 做 RemoveAll —— 直接 foreach 就撞「Collection was modified」把引擎打死
@@ -158,9 +196,14 @@ public class MarketMakerAlgo : LeanAlgorithmBase
         {
             if (leg.Status == OrderStatus.CancelPending) continue;
             var price = leg.Get(OrderField.LimitPrice);
-            if (capped || !desired.Contains(price))
+            if (capped)
             {
-                BotLog($"[MM] 撤{side}腿 @{price}（移出带宽/触限）");
+                BotLog($"[MM] 撤{side}腿 @{price}（触限）");
+                stale.Add(leg);
+            }
+            else if (!desired.Contains(price) && ShouldRoll(price, isBid))
+            {
+                BotLog($"[MM] 撤{side}腿 @{price}（移出带宽）");
                 stale.Add(leg);
             }
         }
@@ -197,4 +240,30 @@ public class MarketMakerAlgo : LeanAlgorithmBase
 
     private int GetIntParam(string key, int fallback)
         => GetParameter(key) is { Length: > 0 } s && int.TryParse(s, out var v) && v > 0 ? v : fallback;
+
+    /// <summary>
+    /// 只放行 Error 的 Lean 日志过滤器（2026-10-29）：本版 Lean 无日志级别 API，用包装 handler 把
+    /// Trace/Debug（每笔单几十行 margin/OrderEvent）全部丢弃，只把 Error 透给原 handler。
+    /// 不 Dispose 内层（那是引擎自己的 handler，进程级共享，不能由策略关掉）。
+    /// </summary>
+    private sealed class ErrorOnlyLogHandler : QuantConnect.Logging.ILogHandler
+    {
+        private readonly QuantConnect.Logging.ILogHandler _inner;
+
+        public ErrorOnlyLogHandler(QuantConnect.Logging.ILogHandler inner) => _inner = inner;
+
+        public void Error(string text)
+        {
+            if (_inner is not null) _inner.Error(text);
+            else Console.Error.WriteLine(text);
+        }
+
+        public void Debug(string text) { }
+
+        public void Trace(string text) { }
+
+        public void Report(string text) => _inner?.Report(text);
+
+        public void Dispose() { }
+    }
 }

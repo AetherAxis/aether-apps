@@ -54,6 +54,11 @@ public class NoiseTakerAlgo : LeanAlgorithmBase
     public override void Initialize()
     {
         ConfigureFromConfig();
+        // 关掉 Lean 自身的 Trace/Debug 输出（2026-10-29）：默认全量 Trace 会把每笔单的 margin /
+        // OrderEvent 打成几十行，长时间驻留会把服务器磁盘写满并拖死整机 I/O。只保留 Error，
+        // 策略自己的 BotLog（[Noise] 行）不受影响。
+        // 本版 Lean（2.5.18193）没有 SetLoggingLevel API，只能自己包一层 handler（详见 ErrorOnlyLogHandler）。
+        QuantConnect.Logging.Log.LogHandler = new ErrorOnlyLogHandler(QuantConnect.Logging.Log.LogHandler);
         _symbol = AddCtpData(GetParameter("symbol") ?? "ax001", Resolution.Second);
 
         var interval = GetIntParam("IntervalSec", 3);
@@ -120,4 +125,30 @@ public class NoiseTakerAlgo : LeanAlgorithmBase
 
     private decimal GetDecimalParam(string key, decimal fallback)
         => GetParameter(key) is { Length: > 0 } s && decimal.TryParse(s, out var v) && v > 0 ? v : fallback;
+
+    /// <summary>
+    /// 只放行 Error 的 Lean 日志过滤器（2026-10-29）：本版 Lean 无日志级别 API，用包装 handler 把
+    /// Trace/Debug（每笔单几十行 margin/OrderEvent）全部丢弃，只把 Error 透给原 handler。
+    /// 不 Dispose 内层（那是引擎自己的 handler，进程级共享，不能由策略关掉）。
+    /// </summary>
+    private sealed class ErrorOnlyLogHandler : QuantConnect.Logging.ILogHandler
+    {
+        private readonly QuantConnect.Logging.ILogHandler _inner;
+
+        public ErrorOnlyLogHandler(QuantConnect.Logging.ILogHandler inner) => _inner = inner;
+
+        public void Error(string text)
+        {
+            if (_inner is not null) _inner.Error(text);
+            else Console.Error.WriteLine(text);
+        }
+
+        public void Debug(string text) { }
+
+        public void Trace(string text) { }
+
+        public void Report(string text) => _inner?.Report(text);
+
+        public void Dispose() { }
+    }
 }
