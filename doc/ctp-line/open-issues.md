@@ -17,7 +17,7 @@
 
 | # | 问题 | 归属仓 | 优先级 | 状态 |
 |---|---|---|---|---|
-| 3 | 重连触发仍依赖回调顺序 | client | P1 | 已合入，**待部署** |
+| 3 | 重连闸门已改，真实断连下未验 | client | P1 | 已合入（`f0bc109`），**待实测** |
 | 5 | 持仓其余字段仍是抓包常量 | front | P1 | 未动 |
 | 6 | 持仓量 >255 被截到 255 | front | P1 | 未动 |
 | 7 | 查合约空结果不派发 | front | P2 | 未动 |
@@ -35,14 +35,17 @@
 
 ## 1. 会话与连接
 
-### #3 `FrontConnected` 的闸门仍然依赖回调顺序
-- **现象**：`OnTraderFrontConnected` 里还是 `if (_hadLoggedIn && !_socketAlive)`。服务端主动 `Close` 时，
-  如果 SDK 只回调 `FrontConnected` 不回调 `FrontDisconnected`，重连就不会触发。
-- **为什么不直接改**：2026-10-29 事故后仍然**没有客户端侧证据**能区分「SDK 不回调」还是「被别处重置」。
-  在没日志的情况下改成无条件重建，可能引入重连风暴（比现在更糟）。
-- **下一步**：**必须先做 #4**（会话日志），拿到一次真实断连的回调序列，再决定闸门怎么写。
+### #3 `FrontConnected` 的闸门已改，但没在真实断连下验过
+- **原现象**：`OnTraderFrontConnected` 用 `if (_hadLoggedIn && !_socketAlive)` 做闸门。服务端主动 `Close` 时，
+  如果 SDK 只回调 `FrontConnected` 不回调 `FrontDisconnected`，重连就不会触发（2026-10-29 事故 117 单被丢）。
+- **已改（`f0bc109`）**：闸门事实换成「这条 trader 实例登过没有」（`_traderLoggedIn`）；`_socketAlive=true`
+  却又收到 `FrontConnected` 时**先记一条状态漂移日志**再按掉线重连处理。重连风暴由 `ReconnectAsync` 的单飞锁兜住。
+  会话日志同期已恢复（#4），客户端侧终于有第一手证据。
+- **仍是问题的是**：**没在真实断连下跑过**——bot 与桌面端跑的都还不是这份构建。
+- **下一步**：掐一次前置（`Restart-Service AetherCtpFront`），确认客户端走出 `断开 → 重连 → 认证 → 登录 → Ready` 且 `Epoch` 自增，
+  `等认证` 计数为 0；若出现「状态漂移」日志，说明命中 (a)「SDK 只回调 FrontConnected」，据此可关死此条。
 - **落点**：`ctp-net-client/src/Ctp.Net.Client/CtpSessionService.cs`（`OnTraderFrontConnected` / `OnSafetyTimer`）。
-- **细节**：`../../../ctp-net-client/doc/session-reauth-after-reconnect.md` §3.4、§7「仍缺」第 1 条。
+- **细节**：`../../../ctp-net-client/doc/session-reauth-after-reconnect.md` §3.4、§6、§7。
 
 ## 2. 持仓与查询记录
 

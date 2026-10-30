@@ -154,7 +154,7 @@ $t = Get-Content 'C:\Aether\ctpsim-data\ctpsim-front.log' -Tail 80000 -Encoding 
 | 盘口被僵尸买单喂成单向 ⇒ 价格冻死 | **已处置**（重置 venue，`reset-venue.ps1`） | `aether-ctp-hosts/scripts` |
 | bot 掉线后无法下单（重连不重认证） | **部分已修（2026-10-29）**：重连走 `ReconnectAsync` ⇒ 新建 trader ⇒ 认证 + 登录；非 Ready 的写入抛 `CtpSessionNotReadyException` 而不是静默丢。**未修**：触发条件仍依赖 `FrontDisconnected` 先到；旁路客户端因此还不能退役 | `ctp-net-client` |
 | 断连时撤单静默丢失 | **已修（2026-10-29，前置侧）**：`FrontPendingLedger` 记账 + 下次登录对账（撤单幂等重放、孤儿活单撤掉），E2E 4 例 | `ctp-net-front` ＋ `ctp-net-core` |
-| 240 断连撞报单突发（应挪到安全点） | **未修**：仍是攒满即断；现在靠客户端 Ready 门禁 + 登录对账兜住后果，不是消掉触发源 | `ctp-net-front` |
+| ~~240 断连撞报单突发（应挪到安全点）~~ | **已消掉触发源（2026-10-30 17:44，front=`2e4867b`）**：回收机制整体删除，不再有周期性断连；事故当时的缓解（客户端 Ready 门禁 + 登录对账）仍在 | `ctp-net-front` |
 | 在途请求写满 reqId 池 ⇒ 下单线程自旋 | **已修（2026-10-29）**：`WaitPendingAsync`/`WaitQueryAsync` 超时必摘条目；`NextRequestId` 限次后抛异常 | `ctp-net-core` |
 | bot 无会话日志（只能靠前置反推） | **未修**（P2，本轮未动 `aether-ctp-hosts` 的启动脚本） | `aether-ctp-hosts` |
 | 价格被困在两跳带宽（不像真行情） | 已缓解（重置后 6 个价位 / 110 条 tick，见 2.5 注） | `aether-ctp-hosts/algorithms` |
