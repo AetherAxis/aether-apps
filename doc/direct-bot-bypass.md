@@ -9,7 +9,7 @@
 
 | 事实 | 后果 |
 |---|---|
-| 前置交易腿每 **240 帧**强制断连（`CtpFrontSession`），客户端重连后**不会重新认证**（`CtpSessionService` 的 `_hadLoggedIn && !_socketAlive` 闸门） | bot 静默失去下单能力（2026-10-29 实测 117 单被当作垃圾帧丢弃） |
+| 前置交易腿~~每 **240 帧**强制断连~~（**2026-10-30 已删除并上线**）+ 客户端重连后**不会重新认证**（`CtpSessionService` 的 `_hadLoggedIn && !_socketAlive` 闸门，`f0bc109` 已修待验证） | bot 静默失去下单能力（2026-10-29 实测 117 单被当作垃圾帧丢弃）。**旁路此刻只剩第二条理由** |
 | 行情由**交易所**产生（`SimMarketDataEngine.RecordTrade` / `OnBookChanged` → `EmitTick`），前置只做转发（`CtpFrontMdSession._rpc.TickPushed`） | 谁下单不重要，tick 一样推给所有订阅者 |
 | 同一条断连也会吞掉**撤单请求** | 交易所里积下 54,738 张从未撤掉的 GFD 买单（106,192 手），盘口只有买盘、没有卖盘 ⇒ 永远不可能成交 ⇒ last 冻死 |
 
@@ -32,7 +32,7 @@ services.AddTradingRuntimeLean();
 services.AddLeanAlgorithmServices(dataDir);
 ```
 
-- **240 帧强断与重连认证这两条限制不经过旁路**：它们在 `CtpFrontSession`（前置交易腿）里，直连会话没有这一层，因此不会周期性掉线。
+- **重连认证这条限制不经过旁路**：它在 `CtpSessionService`（客户端）里，直连会话没有这一层。（240 帧强断那条 2026-10-30 已从前置删除，不再是理由——旁路退役的前置条件因此少了一条。）
 - 开户资金：**开户余额恒 0，没有任何开关**（2026-10-29 起「初始资金 / 开户赠金」`SimOptions.InitialBalance` 与 `AETHER_CTP_SIM_BALANCE` 已从代码删除）。账户里的钱只来自链上 AQ 真实转账——宿主 `LedgerCashRail` 对账后经 `CreditQuoteDeposit` 入账（1 AQ = 1 现金）。**新账户不充值就一分钱也没有，开不了仓**；这是刻意的，别再加回赠金。
 
 ## 3. 命名与共存边界（重要）
@@ -136,22 +136,25 @@ foreach ($n in 'botmm','botnoise') { Start-ScheduledTask "AetherBotDirect-$n" }
 
 同时满足即退役本客户端，回到「bot 连前置」：
 
-> **2026-10-30 复核（代码 vs 服务器）**：三条在**代码层面都已完成**，但都没上服务器，而且触发条件之一的
-> 「FrontConnected 闸门」刚改过、还没在真实断连下验过。所以「没做」的时代结束了，现在是「没上」的时代。
+> **2026-10-30 17:44 复核（代码 vs 服务器）**：三条里——
+> ③ 240 帧强断**已删除并上线**；② 断连丢撤单的对账（`FrontPendingLedger`）**已随 10-30 部署上线**；
+> ① 重连重认证**代码已合入（`f0bc109`）但客户端二进制没上服务器**，触发闸门也没在真实断连下验过。
+> ⇒ 阻塞点从「三条都做」收敛成「① 没上 + 没验」。见 `ctp-line/open-issues.md` #19。
 
 1. 前置重连后**重新认证**（P0，见 `session-reauth-after-reconnect.md`）——**客户端侧已做**：重连走 `ReconnectAsync` ⇒ 新建 trader ⇒ 认证 + 登录，
    且非 Ready 的写入直接抛 `CtpSessionNotReadyException`（不再静默丢帧）。
    **2026-10-30 更新**：触发条件的闸门已从 `_socketAlive` 换成「本条 trader 实例是否登过」
    （`ctp-net-client` `f0bc109`，§10），状态漂移时会记一行 State。
    **未验**：仍未在真实断连下看过回调序列——不过这一次终于有日志了（本文件的会话日志启动器已部署）。
-2. 断连不再丢撤单——**前置侧已做**（§7 第 2 条），但**尚未部署到 `117.72.186.128`**，需先在真前置跑一轮「断连后重连 ⇒ 僵尸单归零」的实测。
-3. 240 帧强制断连——**已改（`91b0160`，2026-10-30）**：软点 240 打标、出站排空才断、硬顶 251 兜底；
-   **未部署、未在真实负载下验**。见 `ctp-net-front/DESIGN.md` §3.11。
+2. 断连不再丢撤单——**前置侧已做并已上线**（`FrontPendingLedger`，2026-10-30 17:44 部署已含）；
+   仍缺一轮真前置实测：「断连后重连 ⇒ 僵尸单归零」。
+3. 240 帧强制断连——**已删除并上线（2026-10-30 17:44，front=`2e4867b`）**：软点/硬点/安全点回收整体下掉，
+   序号 ≥240 只打一行日志、≥65000（编码 2 字节硬上限）才断。见 `ctp-net-front/DESIGN.md` §3.11。
 
 退役动作：停 `AetherBotDirect-*` 并删除任务 → `Enable-ScheduledTask AetherBot-*` + 启动 → `deploy-from-local.sh console` 重推 console bot（可选）→ 删除 `C:\Aether\direct-bot` 与 `Aether.DirectBot.Console` 工程。
 
-> 三条退役条件的当前状态与剩余阻塞项，见 `../../ctp-net-front/doc/open-issues.md`（跨仓唯一入口）；
-> 会话语义怎么落地，见 `../../ctp-net-client/doc/session-lifecycle.md`（会话状态机 + epoch、在途账本与对账、240 断连的三种消除路径、对真柜台的待实测清单）。
+> 三条退役条件的当前状态与剩余阻塞项，见 `ctp-line/open-issues.md`（跨仓总册）；
+> 会话语义怎么落地，见 `../../ctp-net-client/doc/session-lifecycle.md`（会话状态机 + epoch、在途账本与对账、对真柜台的待实测清单；文中「240 断连的三种消除路径」已随回收删除而作废）。
 
 ## 9. 自检命令
 
