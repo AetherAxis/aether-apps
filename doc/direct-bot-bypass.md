@@ -40,7 +40,7 @@ services.AddLeanAlgorithmServices(dataDir);
 | 面向 | CTP 线（原路，暂时停用） | 直连线（本次） |
 |---|---|---|
 | 计划任务 | `AetherBot-botmm` / `AetherBot-botnoise`（**Disabled**，不删） | `AetherBotDirect-botmm` / `AetherBotDirect-botnoise` |
-| 启动脚本 | `C:\Aether\ctp-console\run-bot{mm,noise}.cmd` | `C:\Aether\direct-bot\run-direct-{mm,noise}.cmd` |
+| 启动脚本 | `C:\Aether\ctp-console\run-bot{mm,noise}.cmd` | `C:\Aether\direct-bot\run-direct-{mm,noise}.cmd` → 调用 `directbot-launcher.cmd`（带会话日志） |
 | 程序 | `Aether.CtpConsole.exe`（走 CTP 二进制协议 → 前置） | `Aether.DirectBot.Console.exe`（走 JSON-RPC → 交易所） |
 | 实例目录 | `C:\Aether\ctp-console\<实例>` | `C:\Aether\direct-bot\<实例>` |
 
@@ -73,7 +73,31 @@ foreach ($n in 'botmm','botnoise') { Start-ScheduledTask "AetherBotDirect-$n" }
 | 交易所日志 | `C:\Aether\ctpsim-data\ctpsim-exchange.log` | 启动横幅会打印账户数、上市合约数、**开户余额恒 0（现金只能来自链上 AQ 充值）** |
 | watchdog v2 | `C:\Aether\build-tools\watchdog.ps1`（任务 `AetherBot-watchdog`） | 直连家族判活 = 心跳新鲜度 + `engine -ne 'Running'`；CTP 家族只在其任务 `Running` 时才管 |
 
-**默认不写日志**（2026-10-29 教训：客户端 tick 风暴把 8.6GB/天 写进磁盘、拖死整机 I/O）。排查时临时把 launcher 的 `>NUL 2>&1` 改成 `>> 实例目录\probe.log 2>&1`，**用完改回**。编码陷阱：bot 的 stdout 是 **GBK**，`CtpConsole` 的探针输出是 **UTF-8**——解错编码只会得到乱码，不会报错。
+**会话日志（2026-10-30 起默认写盘）**：`C:\Aether\direct-bot\<实例>\logs\bot-<yyyyMMdd>.log`，
+按天分文件 + 单文件 64MB 上限（超了改名成 `.1`，只留一代 ⇒ 每实例常驻 ≤128MB）。
+落盘方式是按字节追加（cmd 的 `>>` 不转码，GBK 原样），所以**不要**用 UTF-8 读——见下面的编码陷阱。
+之所以能恢复日志：逐笔 tick 日志 2026-10-26 起已默认关闭（`AETHER_CTP_TICK_TRACE` 才开），
+日常只剩会话事件（连接/认证/登录/断开/重建/Ready），量级 MB/天以下，不会再重演 2026-10-29 的 8.6GB/天。
+**判活仍以 `directbot.heartbeat.json` 为准**，日志只是诊断面。
+
+编码陷阱：bot 的 stdout 是 **GBK**，`CtpConsole` 的探针输出是 **UTF-8**——解错编码只会得到乱码，不会报错。
+
+启动器文件（本仓 `scripts/`，部署到 `C:\Aether\direct-bot\`）：`directbot-launcher.cmd`（本体）+
+`run-direct-mm.cmd` / `run-direct-noise.cmd`（各自的实例名与参数）。换掉旧文件**不需要改计划任务**——
+任务动作还是那两个 `.cmd` 路径。
+
+**已部署（2026-10-30）**：三份文件已复制到 `C:\Aether\direct-bot\`，旧的两份留了
+`run-direct-{mm,noise}.cmd.bak-20261030`。**当前正在跑的两个进程仍用旧镜像**（cmd 已把脚本读进内存），
+日志从下一次启动开始生效——所以不要在盘中为了"让日志生效"去重启 bot。
+
+部署前在 `C:\ctpbuild\smoke\` 做过零风险冒烟（假 exe + 假实例目录，不碰线上）：缺 `INSTANCE` 退 2、
+退出码逐层透传、同日两次启动是追加不是截断、64MB 触发 `.1` 轮转、两个包装脚本的 `call` 链路都对。
+冒烟当场抓到两个坑，都是 `.cmd` 这个遗留解析器的老问题：
+
+1. **`.cmd` 必须是 7-bit ASCII + CRLF**。cmd 按 OEM 代码页（本机 936）解析脚本，中文注释的 UTF-8
+   多字节序列里可能出现被当成运算符的字节，把一行 `rem` 劈成命令。中文文档写在这里，不写进 `.cmd`。
+2. **`echo` 里不要出现 `>`**。原来写 `log -> %LOGFILE%`，那个 `>` 被当重定向，日志行在 `log -` 处截断，
+   且后续 `>>"%LOGFILE%"` 被吃掉——语法没错、不报错，只是少半行。改写成 `log file %LOGFILE%`。
 
 ## 6. 2026-10-29：重置 venue（授权后执行）
 

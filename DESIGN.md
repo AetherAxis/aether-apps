@@ -77,13 +77,29 @@
 | # | 优先级 | 项目 | 现状证据 | 建议 | 代价 / 风险 |
 |---|---|---|---|---|---|
 | 1 | ~~P1~~ 已关闭 | LedgerWallet 未迁入 | 2026-10-27 收入本仓，**同日随虚拟币线整体拆出到 ⑯ `aether-coin-hosts`**（含 10 例回环测试与 `deploy-ledger`） | 完成（落点是 ⑯） | — |
-| 2 | P2 | 部署脚本旧名 | `ctp-console-remote-deploy.ps1:61,69` 用 `Acme.*` | 改为 `Aether.CtpConsole` | 恒报无实例，启动命令错 |
-| 3 | P2 | 无 SIGTERM 处理 | `Program.cs:477-509` 只挂 `CancelKeyPress` | 加 `PosixSignalRegistration` | 断连/停服不走撤单腿 |
-| 4 | P2 | CI 无审计步 | `ci.yml` 仅 build + test | 加 `--vulnerable` 审计 | 漏钉不会红 |
-| 5 | P3 | WinHttpHandler 惰性 | 图无此包，仅中央表有名 | 核对 TFM 后取舍 | 误导「已修」 |
+| 2 | ~~P2~~ 已关闭（2026-10-30 复核） | 部署脚本旧名 | 现文件已全用 `Aether.CtpConsole`（进程名、启动命令）；`grep -rn 'Acme\.' scripts/` 只剩 `ctpsim-remote-deploy.ps1:144` 一句历史注释 | 已完成 | — |
+| 3 | ~~P2~~ 已关闭（2026-10-30 复核） | 无 SIGTERM 处理 | `Aether.CtpConsole/Program.cs:491` 已有 `PosixSignalRegistration.Create(PosixSignal.SIGTERM, …)`，SIGINT 仍由 `CancelKeyPress` 负责（注释写明避免双重注册） | 已完成 | — |
+| 4 | ~~P2~~ 已关闭（2026-10-30 复核） | CI 无审计步 | `ci.yml:72-77` 已有 `dotnet package list --vulnerable --include-transitive`，并显式过滤已确认的 GHSA | 已完成 | — |
+| 5 | ~~P3~~ 已关闭（2026-10-30 复核） | WinHttpHandler 惰性 | 中央表已删该钉，并在注释里写明「net10.0 还原图里根本没有它——已移除，避免假装修过」 | 已完成 | — |
 | 6 | P3 | 测试仅 2 例 | 只覆盖策略编译 | 补 HostOptions env 用例 | 装配无回归网 |
 | 7 | P3 | 部署仅手动 | `deploy-*.yml` 只有 `workflow_dispatch` | 加 `repository_dispatch` | 易漏部署 |
-| 8 | P4 | 文档漂移 | `readme.md:28` 旧路径；两 props 重复属性 | 更正、去重 | 纯维护性 |
+| 8 | ~~P4~~ 已关闭（2026-10-30 复核） | 文档漂移 | `readme.md` 已是「没有 `src/`」的新版说明；仓内只剩一个 `Directory.Packages.props`（无重复属性）。**本表自身曾是漂移源**（2/3/4/5 早已修完却还挂在待办里）——本轮按代码逐条复核后关掉 | 已完成 | — |
+
+## 升级补记（2026-10-30）：待办表复核 + bot 会话日志启动器
+
+**本表复核**：第 2/3/4/5/8 项其实早在 `1862eaf`（「console 挂 SIGTERM 优雅停止；CI 加依赖审计；
+移除无效的传递钉」）就做完了，只是表格没跟着改——**文档漂移本身就是 #8 那条待办**。本轮逐条对代码核了一遍
+（`grep` 证据写在上面每一行），把 5 条关掉。真正还开着的是 #6（HostOptions env 测试，`SimHostOptions.FromEnvironment`
+定义在 ⑥ `aether-exchange`，从本仓测试要跨仓构型）和 #7（部署改 `repository_dispatch`）。
+
+**bot 会话日志启动器（对应 front 仓 open-issues #4）**：`scripts/directbot-launcher.cmd` +
+`scripts/run-direct-{mm,noise}.cmd`。把 `>NUL` 换成「按天 + 64MB 上限（最多两代）」的日志文件，
+落盘是按字节追加（不复用它转码，GBK 原样），判活仍看 `directbot.heartbeat.json`。
+**已部署（2026-10-30）**：三份文件已拷到 `C:\Aether\direct-bot\`，旧的两份留了 `.bak-20261030`。
+计划任务的动作仍是那两个 `.cmd` 路径，**不用改**；但正在跑的两个进程用的是旧镜像（cmd 已把脚本读进内存），
+日志从**下一次启动**才生效——不在盘中为了让它生效而重启 bot。部署前在 `C:\ctpbuild\smoke\` 用假 exe/假实例
+做过零风险冒烟（缺 `INSTANCE` 退 2、退出码透传、同日追加、64MB 轮转、`call` 链路）。细节与两个 `.cmd` 解析器
+坑（必须 ASCII+CRLF；`echo` 里不能出现 `>`）见 `doc/direct-bot-bypass.md` §5。
 
 ## 升级补记（2026-10-26）：console `[tick]` 逐笔打印默认关
 
