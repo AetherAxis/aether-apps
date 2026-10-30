@@ -13,11 +13,10 @@
 >
 > 最后整体核验：**2026-10-30**
 
-## 0. 一览（15 条）
+## 0. 一览（14 条）
 
 | # | 问题 | 归属仓 | 优先级 | 状态 |
 |---|---|---|---|---|
-| 3 | 重连闸门已改，真实断连下未验 | client | P1 | 已合入（`f0bc109`），**待实测** |
 | 5 | 持仓其余字段仍是抓包常量 | front | P1 | 未动 |
 | 6 | 持仓量 >255 被截到 255 | front | P1 | 未动 |
 | 7 | 查合约空结果不派发 | front | P2 | 未动 |
@@ -35,17 +34,7 @@
 
 ## 1. 会话与连接
 
-### #3 `FrontConnected` 的闸门已改，但没在真实断连下验过
-- **原现象**：`OnTraderFrontConnected` 用 `if (_hadLoggedIn && !_socketAlive)` 做闸门。服务端主动 `Close` 时，
-  如果 SDK 只回调 `FrontConnected` 不回调 `FrontDisconnected`，重连就不会触发（2026-10-29 事故 117 单被丢）。
-- **已改（`f0bc109`）**：闸门事实换成「这条 trader 实例登过没有」（`_traderLoggedIn`）；`_socketAlive=true`
-  却又收到 `FrontConnected` 时**先记一条状态漂移日志**再按掉线重连处理。重连风暴由 `ReconnectAsync` 的单飞锁兜住。
-  会话日志同期已恢复（#4），客户端侧终于有第一手证据。
-- **仍是问题的是**：**没在真实断连下跑过**——bot 与桌面端跑的都还不是这份构建。
-- **下一步**：掐一次前置（`Restart-Service AetherCtpFront`），确认客户端走出 `断开 → 重连 → 认证 → 登录 → Ready` 且 `Epoch` 自增，
-  `等认证` 计数为 0；若出现「状态漂移」日志，说明命中 (a)「SDK 只回调 FrontConnected」，据此可关死此条。
-- **落点**：`ctp-net-client/src/Ctp.Net.Client/CtpSessionService.cs`（`OnTraderFrontConnected` / `OnSafetyTimer`）。
-- **细节**：`../../../ctp-net-client/doc/session-reauth-after-reconnect.md` §3.4、§6、§7。
+> **#3 已于 2026-10-30 真实环境验证通过并关闭**，复盘见 [`history/2026-10.md`](history/2026-10.md) #3。
 
 ## 2. 持仓与查询记录
 
@@ -120,9 +109,10 @@
 - **#18 E2E 进不了 CI**：`ci.yml` 只跑 wire 钉子；E2E 需要官方 SDK 的 linux-x64 `.so`（原生依赖还没打包，
   同一根因见 `../../../ctp-net-core/DESIGN.md` §6 #2）。过渡方案：macOS runner。
 - **#19 直连旁路未退役**：退役步骤见 [`../direct-bot-bypass.md`](../direct-bot-bypass.md) §8。
-  **2026-10-30 17:44 更新**：原先三条理由里——③ 240 帧强断**已删除上线**、② 断连丢撤单**已部署**、
-  ① 重连重认证**代码已合入但客户端二进制没上服务器**。
-  ⇒ 阻塞点从"没做"变成"没上 + 没验"：把 console 切到前置跑一轮长会话（≥1 交易日）再说。
+  **2026-10-30 18:12 更新**：三条理由全部落地——③ 240 帧强断**已删除上线**、② 断连丢撤单**已部署**、
+  ① 重连重认证**已在线上掐前置验证通过**（console 客户端，认证/登录/结算确认全 `ErrorID=0`，`等认证` 0 条）。
+  ⇒ 阻塞点从"没做"变成**"没跑量"**：需要把 console 切到前置跑一轮长会话（≥1 交易日、含报单/撤单），
+  确认没有新的静默丢单再退役。目前 bot 仍走旁路。
 
 ## 6. 待定性
 
