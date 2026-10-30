@@ -9,6 +9,7 @@
 #   scripts/deploy-from-local.sh ctpsim     # 交易所 + 前置（停两个服务，撮合中断数十秒）
 #   scripts/deploy-from-local.sh console    # console bot（不停任何服务；实例 config 不被覆盖）
 #   scripts/deploy-from-local.sh direct     # **临时旁路**直连 bot（bot 直连交易所绕开前置；不动任何任务）
+#   scripts/deploy-from-local.sh front      # **只更新前置**（不动交易所：撮合不中断、bot 不受影响）
 #
 # 环境变量（都有默认值）：
 #   AETHER_DEPLOY_HOST  默认 117.72.186.128
@@ -21,8 +22,8 @@ set -euo pipefail
 
 what=${1:-}
 case "$what" in
-    ctpsim|console|direct) ;;
-    *) echo "用法: $0 ctpsim|console|direct" >&2; exit 2 ;;
+    ctpsim|console|direct|front) ;;
+    *) echo "用法: $0 ctpsim|console|direct|front" >&2; exit 2 ;;
 esac
 
 HOST=${AETHER_DEPLOY_HOST:-117.72.186.128}
@@ -40,6 +41,9 @@ SSH_OPTS=(-i "$KEY" -o BatchMode=yes -o StrictHostKeyChecking=accept-new
           -o ConnectTimeout=20 -o ServerAliveInterval=15 -o ServerAliveCountMax=4)
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
 VERSION=$(git -C "$ROOT" rev-parse --short HEAD)
+# 前置代码不在本仓（`ctp-net-front`）——只写本仓 SHA 会让人误判「部署了哪个前置版本」
+# （2026-10-30 现场：VERSION=e2a9908 其实是本仓的文档提交，前置源码是 7d68501）。
+VERSION_FRONT=$(git -C "$WS/ctp-net-front" rev-parse --short HEAD 2>/dev/null || echo unknown)
 
 publish() { # publish <项目名> <输出子目录>
     "$DOTNET" publish "$1" -c Release --self-contained true --runtime win-x64 -o "$TMP/$2" >/dev/null
@@ -47,12 +51,23 @@ publish() { # publish <项目名> <输出子目录>
 }
 
 case "$what" in
+front)
+    # **只更新前置**（2026-10-30）：交易所二进制没变时（只改帧模板/会话语义/对账）没必要把它一起重启，
+    # 否则撮合中断数十秒、正在跑的 bot 全部断链。远端脚本与 ctpsim 的「前置那半边」同源。
+    STAGING='C:/Aether/ctpfront-tmp'; TAR_NAME=ctpfront.tar.gz; REMOTE_SCRIPT=ctpfront-remote-deploy.ps1
+    echo "[deploy] 构建前置 win-x64 自包含（宿主 $VERSION / 前置 $VERSION_FRONT）"
+    ( cd "$ROOT" && publish Aether.CtpFront.Host front )
+    printf 'hosts=%s front=%s\n' "$VERSION" "$VERSION_FRONT" > "$TMP/front/VERSION"
+    # tar 根 = front/ 子目录（远端脚本按 front\ 解包，与 ctpsim 布局一致）
+    tar -czf "$TMP/$TAR_NAME" -C "$TMP" front
+    echo "  停服影响：仅前置（tcp 17801/17802 断开数秒；交易所与撮合不受影响）"
+    ;;
 ctpsim)
     STAGING='C:/Aether/ctpsim-tmp'; TAR_NAME=ctpsim.tar.gz; REMOTE_SCRIPT=ctpsim-remote-deploy.ps1
     echo "[deploy] 构建 win-x64 自包含（版本 $VERSION）"
     ( cd "$ROOT" && publish Aether.Exchange.Host exchange && publish Aether.CtpFront.Host front )
     printf '%s\n' "$VERSION" > "$TMP/exchange/VERSION"
-    printf '%s\n' "$VERSION" > "$TMP/front/VERSION"
+    printf 'hosts=%s front=%s\n' "$VERSION" "$VERSION_FRONT" > "$TMP/front/VERSION"
     tar -czf "$TMP/$TAR_NAME" -C "$TMP" exchange front
     echo "  停服影响：交易所+前置重启，撮合中断数十秒"
     ;;
