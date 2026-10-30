@@ -139,7 +139,7 @@ $t = Get-Content 'C:\Aether\ctpsim-data\ctpsim-front.log' -Tail 80000 -Encoding 
 | 端口齐、进程在、前置日志 60 秒内无 `推送 tick` 行 | 大概率 2.3（重连未重认证）或 2.4（没有成交） |
 | `等认证` > 0 | 命中 2.3 缺陷 —— 修复前的临时处置是**重启 bot 进程**；修复后（2026-10-29）客户端在非 Ready 时不发帧，正常情况下这一项应恒为 0 |
 | 有 tick 但 `LAST_DISTINCT=2` | 链路正常，属 2.5 参数问题 |
-| tick 在推、但 **`ask` 为空 / `last` 不变 / 成交量不变**，只有买一档量在抖 | **单向簿（僵尸买盘）复现**——链路正常、市场停摆。2026-10-30 从客户端连远程前置实测到：`last=102.17 bid=102.33/1847 ask=-/0 vol=8496`，两边 bot 都在 Running（botmm orders 2238 / botnoise 35530）。交易所侧 `ctp-quotes-probe.ps1` 同值 ⇒ 不是前置问题。处置：`reset-venue.ps1`（同下表的「价格冻死」） |
+| tick 在推、但 **`ask` 为空 / `last` 不变 / 成交量不变**，只有买一档量在抖 | **单向簿复现**——链路正常、市场停摆。2026-10-30 从公网客户端连远程前置实测：`last=102.17 bid=102.33/1847 ask=-/0 vol=8496`（15 分钟零成交），两边 bot 都在 Running（botmm orders 2238 / botnoise 35530）。交易所侧 `ctp-quotes-probe.ps1` 同值 ⇒ 不是前置问题。**这一次的成因和上次不同**：仓位是 botmm −200 / botnoise +152，而 `QueryOrders` 拿到的 11 张报单**全是 `BuyOpen`、没有一张卖单** ⇒ 两边都在买、没人卖。上次是僵尸单，这次要先查策略为什么不发卖单（`algorithms/noise-taker.lean.cs` 的 `_netCap` 反转与卖单被拒/回报丢失）。处置仍可先 `reset-venue.ps1` |
 
 ## 4. 本轮已修 / 未修
 
