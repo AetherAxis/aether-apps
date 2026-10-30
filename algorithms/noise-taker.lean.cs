@@ -12,8 +12,9 @@ namespace LabsLeanAlgorithms;
 /// 噪声交易者机器人（Lean 版）：按节奏随机方向**深度穿越**吃流动性——让盘口有成交、价格会动。
 /// 普通客户端策略（勾「真实下单」后经 wire 真实报单）。双向开仓（2026-10-10 现货开空解禁——随机买卖畅通）。
 /// <para/>
-/// 净持仓软钳（NetCap）：超界反转方向 ⇒ 持仓/OI 有界、方向自动回归；MaxLots 单笔上限。
-/// 固定 Seed ⇒ 决策序列可复现。
+/// 方向**严格交替**（买/卖/买/卖…，2026-10-30 起）；净持仓软钳（NetCap）只压超界方向的手数，**不改方向**
+/// （早期版本用「超界反转方向」，会把方向锁死在单边，见 <see cref="TakeTurn"/> 注释）；MaxLots 单笔上限。
+/// 固定 Seed ⇒ 手数序列可复现（方向不再随机）。
 /// <para/>
 /// <b>为什么是「穿越单」而不是市价单/IOC</b>（2026-10-28 服务器双 bot 长跑定案）：
 /// 早先走 <c>MarketOrder</c>，由 CtpOrderRequestMapper 换成「对手价 ± max(PriceTick,0.02)」的 IOC。
@@ -33,6 +34,7 @@ public class NoiseTakerAlgo : LeanAlgorithmBase
 {
     private Symbol _symbol;
     private Random _rng = new(42);
+    private int _turn;                       // 方向交替计数（偶数买/奇数卖，见 TakeTurn）
     private int _maxLots;
     private int _netCap;
     private decimal _tickSize;
@@ -45,7 +47,7 @@ public class NoiseTakerAlgo : LeanAlgorithmBase
     {
         new StrategyParameterDef("IntervalSec", "交易间隔（秒）", "3"),
         new StrategyParameterDef("MaxLots", "单笔手数上限", "3"),
-        new StrategyParameterDef("NetCap", "净持仓软钳（手）", "3"),
+        new StrategyParameterDef("NetCap", "净持仓软钳（手，超界方向只下 1 手；不改方向）", "3"),
         new StrategyParameterDef("Seed", "随机种子（可复现）", "42"),
         new StrategyParameterDef("TickSize", "价格网格（wire 量化 ulp，不是合约表的 PriceTick）", "0.015625"),
         new StrategyParameterDef("CrossTicks", "穿越档位数（越大越必成交，0=不穿越）", "10"),
@@ -87,10 +89,19 @@ public class NoiseTakerAlgo : LeanAlgorithmBase
         CancelLive();   // 上一轮没成交的残单先撤：它们已占住旧价位，留着会与新单同价堆积
 
         var pos = security.Quantity;
-        var dir = _rng.Next(2) == 0 ? 1 : -1;
-        if (dir == 1 && pos >= _netCap) dir = -1;        // 净持仓软钳：超界反转
-        else if (dir == -1 && pos <= -_netCap) dir = 1;
+        // —— 方向：**严格交替**，不再由「净仓软钳」决定（2026-10-30 现场定案）——
+        // 旧逻辑：随机取向后，若在超界方向就翻到另一边。它的致命缺陷是把**方向**和**持仓**绑在一起，
+        // 而 `security.Quantity` 是 Lean 自己按成交回报累计的，丢一笔回报就与柜台漂移；一旦漂出 ±NetCap，
+        // 每轮都会被钳回同一侧 ⇒ **永久单边**。2026-10-30 实测：botnoise 柜台持多 152，活单却清一色
+        // BuyOpen、25 秒下 20 单零成交 —— 它被锁在「买」；同日 botmm 净仓 −200 已到 PositionCap，
+        // 卖腿预算 = 200+(−200) = 0，也只挂买 ⇒ 两边都在买、全簿无卖单 ⇒ 零成交、last 冻死。
+        // 交替是**免疫漂移**的：无论 Lean 认为持什么仓，每两轮必有一张卖单，市场永远有对手。
+        // 开平标志仍由 brokerage 按**柜台**持仓快照判（CtpOrderRequestMapper），不受 Lean 仓位视图影响。
+        var dir = (++_turn & 1) == 0 ? 1 : -1;
+        // 净仓软钳降级为「手数保险丝」：超界方向只压到 1 手，不改方向（改方向就是上面那个死锁）
         var lots = _rng.Next(1, _maxLots + 1);
+        if (dir == 1 && pos >= _netCap) lots = 1;
+        else if (dir == -1 && pos <= -_netCap) lots = 1;
 
         // 锚在 last 上：买 = last + CrossTicks×tick（吃穿卖档），卖 = last − CrossTicks×tick（吃穿买档）。
         var anchor = security.Price;

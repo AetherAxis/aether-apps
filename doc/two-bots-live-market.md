@@ -139,7 +139,7 @@ $t = Get-Content 'C:\Aether\ctpsim-data\ctpsim-front.log' -Tail 80000 -Encoding 
 | 端口齐、进程在、前置日志 60 秒内无 `推送 tick` 行 | 大概率 2.3（重连未重认证）或 2.4（没有成交） |
 | `等认证` > 0 | 命中 2.3 缺陷 —— 修复前的临时处置是**重启 bot 进程**；修复后（2026-10-29）客户端在非 Ready 时不发帧，正常情况下这一项应恒为 0 |
 | 有 tick 但 `LAST_DISTINCT=2` | 链路正常，属 2.5 参数问题 |
-| tick 在推、但 **`ask` 为空 / `last` 不变 / 成交量不变**，只有买一档量在抖 | **单向簿复现**——链路正常、市场停摆。2026-10-30 从公网客户端连远程前置实测：`last=102.17 bid=102.33/1847 ask=-/0 vol=8496`（15 分钟零成交），两边 bot 都在 Running（botmm orders 2238 / botnoise 35530）。交易所侧 `ctp-quotes-probe.ps1` 同值 ⇒ 不是前置问题。**这一次的成因和上次不同**：仓位是 botmm −200 / botnoise +152，而 `QueryOrders` 拿到的 11 张报单**全是 `BuyOpen`、没有一张卖单** ⇒ 两边都在买、没人卖。上次是僵尸单，这次要先查策略为什么不发卖单（`algorithms/noise-taker.lean.cs` 的 `_netCap` 反转与卖单被拒/回报丢失）。处置仍可先 `reset-venue.ps1` |
+| tick 在推、但 **`ask` 为空 / `last` 不变 / 成交量不变**，只有买一档量在抖 | **单向簿复现**——链路正常、市场停摆。2026-10-30 从公网客户端连远程前置实测：`last=102.17 bid=102.33/1847 ask=-/0 vol=8496`（15 分钟零成交），两边 bot 都在 Running（botmm orders 2238 / botnoise 35530）。交易所侧 `ctp-quotes-probe.ps1` 同值 ⇒ 不是前置问题。**根因（同日查清并修）**：botnoise 柜台持多 152，活单却清一色 `BuyOpen`——旧 `noise-taker` 的「净仓超界就反转方向」把**方向**和 **Lean 内部净仓**绑死，而 Lean 仓位是按成交回报累计的，丢回报就与柜台漂移，漂出 ±NetCap 后每轮都被钳回同一侧 ⇒ 永久单边；同一时刻 botmm 净仓 −200 已达 `PositionCap`、卖腿预算 `200+(−200)=0`，也只挂买 ⇒ 全簿无卖单。**修法**：`noise-taker` 方向改为**严格交替**（免疫仓位漂移），净仓软钳降级为「超界方向只下 1 手」。10:25 部署重启后 20 秒内 6 笔成交，`ask` 恢复、last 开始跳动。应急仍可 `reset-venue.ps1`（但它不治漂移，会复发） |
 
 ## 4. 本轮已修 / 未修
 
@@ -156,6 +156,7 @@ $t = Get-Content 'C:\Aether\ctpsim-data\ctpsim-front.log' -Tail 80000 -Encoding 
 | 在途请求写满 reqId 池 ⇒ 下单线程自旋 | **已修（2026-10-29）**：`WaitPendingAsync`/`WaitQueryAsync` 超时必摘条目；`NextRequestId` 限次后抛异常 | `ctp-net-core` |
 | bot 无会话日志（只能靠前置反推） | **未修**（P2，本轮未动 `aether-ctp-hosts` 的启动脚本） | `aether-ctp-hosts` |
 | 价格被困在两跳带宽（不像真行情） | 已缓解（重置后 6 个价位 / 110 条 tick，见 2.5 注） | `aether-ctp-hosts/algorithms` |
+| 策略方向绑定 Lean 净仓 ⇒ 回报丢失漂移后永久单边，全簿无卖单、价格冻死 | **已修（2026-10-30）**：`noise-taker` 方向改**严格交替**，净仓软钳只压手数不改方向。**残留风险**：`market-maker` 的卖腿预算仍是 `PositionCap + pos`，仓位打满（±200）时该侧腿被禁——若噪声侧再停下，死锁会重现；后续可给 MM 加「满仓超时强制减仓」 | `aether-ctp-hosts/algorithms` |
 
 ## 5. 一句话回答「为啥办不到」
 
