@@ -110,19 +110,30 @@ internal static class Log
 {
     private static readonly string? LogPath = Environment.GetEnvironmentVariable("AETHER_CTP_FRONT_LOG");
 
+    // 单写者锁：AppendAllText 每次都是 open/write/close，用的是独占写句柄；两个线程同时写，
+    // 输的一方抛 IOException，被下面的 catch 吞掉 → **日志静默丢行**。
+    // 2026-10-30 实测：查报单回 200 行时，出帧线程在连写 200 条「→ [446B] …」，
+    // 派发线程那行「查报单 reqId=6 → 逐帧写出 200 条，89200B，流水 4..203」被挤掉，
+    // 而同一轮的持仓（2 条）/查合约（1 条）都在——丢的恰好是行数最多、最需要的那条。
+    private static readonly object Gate = new();
+
     public static void Line(string msg)
     {
         Console.WriteLine(msg);
         if (LogPath is null) return;
         try
         {
-            var dir = Path.GetDirectoryName(LogPath);
-            if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
-            // 新文件先种 UTF-8 BOM（同 Sim.Host 的 Log——Windows PowerShell 5.1 的 Get-Content
-            // 对无 BOM 的 UTF-8 按 ANSI/GBK 读会乱码；带 BOM 即自动识别）
-            if (!File.Exists(LogPath) || new FileInfo(LogPath).Length == 0)
-                File.WriteAllBytes(LogPath, new byte[] { 0xEF, 0xBB, 0xBF });
-            File.AppendAllText(LogPath, $"{DateTime.Now:yyyy-MM-dd HH:mm:ss} {msg}{Environment.NewLine}");
+            lock (Gate)
+            {
+                var dir = Path.GetDirectoryName(LogPath);
+                if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
+                // 新文件先种 UTF-8 BOM（同 Sim.Host 的 Log——Windows PowerShell 5.1 的 Get-Content
+                // 对无 BOM 的 UTF-8 按 ANSI/GBK 读会乱码；带 BOM 即自动识别）
+                if (!File.Exists(LogPath) || new FileInfo(LogPath).Length == 0)
+                    File.WriteAllBytes(LogPath, new byte[] { 0xEF, 0xBB, 0xBF });
+                // 时间戳取在锁内：日志顺序 == 落盘顺序，便于按流水对账
+                File.AppendAllText(LogPath, $"{DateTime.Now:yyyy-MM-dd HH:mm:ss} {msg}{Environment.NewLine}");
+            }
         }
         catch { /* 磁盘/权限故障不打断前置 */ }
     }
