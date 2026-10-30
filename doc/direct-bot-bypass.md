@@ -136,10 +136,17 @@ foreach ($n in 'botmm','botnoise') { Start-ScheduledTask "AetherBotDirect-$n" }
 
 同时满足即退役本客户端，回到「bot 连前置」：
 
+> **2026-10-30 复核（代码 vs 服务器）**：三条在**代码层面都已完成**，但都没上服务器，而且触发条件之一的
+> 「FrontConnected 闸门」刚改过、还没在真实断连下验过。所以「没做」的时代结束了，现在是「没上」的时代。
+
 1. 前置重连后**重新认证**（P0，见 `session-reauth-after-reconnect.md`）——**客户端侧已做**：重连走 `ReconnectAsync` ⇒ 新建 trader ⇒ 认证 + 登录，
-   且非 Ready 的写入直接抛 `CtpSessionNotReadyException`（不再静默丢帧）。**未验**：触发条件仍依赖 `FrontDisconnected` 回调先到（同文件 §7「仍缺」第 1 条）。
+   且非 Ready 的写入直接抛 `CtpSessionNotReadyException`（不再静默丢帧）。
+   **2026-10-30 更新**：触发条件的闸门已从 `_socketAlive` 换成「本条 trader 实例是否登过」
+   （`ctp-net-client` `f0bc109`，§10），状态漂移时会记一行 State。
+   **未验**：仍未在真实断连下看过回调序列——不过这一次终于有日志了（本文件的会话日志启动器已部署）。
 2. 断连不再丢撤单——**前置侧已做**（§7 第 2 条），但**尚未部署到 `117.72.186.128`**，需先在真前置跑一轮「断连后重连 ⇒ 僵尸单归零」的实测。
-3. 240 帧强制断连被解除或客户端不再被它影响——**未改**：前置仍是攒满即断，客户端靠 Ready 门禁 + 对账兜住后果，而不是消掉触发源。
+3. 240 帧强制断连——**已改（`91b0160`，2026-10-30）**：软点 240 打标、出站排空才断、硬顶 251 兜底；
+   **未部署、未在真实负载下验**。见 `ctp-net-front/DESIGN.md` §3.11。
 
 退役动作：停 `AetherBotDirect-*` 并删除任务 → `Enable-ScheduledTask AetherBot-*` + 启动 → `deploy-from-local.sh console` 重推 console bot（可选）→ 删除 `C:\Aether\direct-bot` 与 `Aether.DirectBot.Console` 工程。
 
