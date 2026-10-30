@@ -44,7 +44,7 @@
 
 CTP 的 `ReqAuthenticate` / `ReqUserLogin` 绑定在当前 TCP 连接上。前置主动断开后，SDK 自动重连开出的是新连接，认证状态归零。
 
-而客户端只在「首次登录」时发认证帧 —— 重连后若没有重新认证，**所有报单会被前置当垃圾帧丢弃**，且客户端侧状态仍显示「已连接」。本次事故丢了 117 张报单，市场因此静默停摆。详见 `../../ctp-net-client/doc/session-reauth-after-reconnect.md`（未修复）。
+而客户端只在「首次登录」时发认证帧 —— 重连后若没有重新认证，**所有报单会被前置当垃圾帧丢弃**，且客户端侧状态仍显示「已连接」。本次事故丢了 117 张报单，市场因此静默停摆。详见 `../../ctp-net-client/doc/session-reauth-after-reconnect.md`（2026-10-29：客户端侧重连重认证 + Ready 门禁已落地，触发条件仍依赖回调顺序）。
 
 这是最反直觉的一条：**「登录成功过」不等于「现在这条连接已认证」**。
 
@@ -137,7 +137,7 @@ $t = Get-Content 'C:\Aether\ctpsim-data\ctpsim-front.log' -Tail 80000 -Encoding 
 |---|---|
 | 端口缺 | 交易所/前置没起 |
 | 端口齐、进程在、前置日志 60 秒内无 `推送 tick` 行 | 大概率 2.3（重连未重认证）或 2.4（没有成交） |
-| `等认证` > 0 | 命中 2.3 缺陷 —— **重启 bot 进程可临时恢复**，根因未修 |
+| `等认证` > 0 | 命中 2.3 缺陷 —— 修复前的临时处置是**重启 bot 进程**；修复后（2026-10-29）客户端在非 Ready 时不发帧，正常情况下这一项应恒为 0 |
 | 有 tick 但 `LAST_DISTINCT=2` | 链路正常，属 2.5 参数问题 |
 
 ## 4. 本轮已修 / 未修
@@ -149,10 +149,11 @@ $t = Get-Content 'C:\Aether\ctpsim-data\ctpsim-front.log' -Tail 80000 -Encoding 
 | 订阅应答回显未请求的 4 个合约 | 已修（`BuildMdSubscribeRsp` 只重写 4 个 6B 槽，帧宽不变） | `ctp-net-front` |
 | 客户端「同值 tick 去重」误丢合法快照 | **已移除**（2026-10-29；端点实测零丢失） | `ctp-net-core` |
 | 盘口被僵尸买单喂成单向 ⇒ 价格冻死 | **已处置**（重置 venue，`reset-venue.ps1`） | `aether-ctp-hosts/scripts` |
-| bot 掉线后无法下单（重连不重认证） | 临时绕过（bot 直连交易所），根因未修 | `ctp-net-client` ＋ `ctp-net-front` |
-| 断连时撤单静默丢失 | 未修（僵尸单的源头） | `ctp-net-client` |
-| 240 断连撞报单突发（应挪到安全点） | 未修 | `ctp-net-front` |
-| bot 无会话日志（只能靠前置反推） | 未修 | `aether-ctp-hosts` |
+| bot 掉线后无法下单（重连不重认证） | **部分已修（2026-10-29）**：重连走 `ReconnectAsync` ⇒ 新建 trader ⇒ 认证 + 登录；非 Ready 的写入抛 `CtpSessionNotReadyException` 而不是静默丢。**未修**：触发条件仍依赖 `FrontDisconnected` 先到；旁路客户端因此还不能退役 | `ctp-net-client` |
+| 断连时撤单静默丢失 | **已修（2026-10-29，前置侧）**：`FrontPendingLedger` 记账 + 下次登录对账（撤单幂等重放、孤儿活单撤掉），E2E 4 例 | `ctp-net-front` ＋ `ctp-net-core` |
+| 240 断连撞报单突发（应挪到安全点） | **未修**：仍是攒满即断；现在靠客户端 Ready 门禁 + 登录对账兜住后果，不是消掉触发源 | `ctp-net-front` |
+| 在途请求写满 reqId 池 ⇒ 下单线程自旋 | **已修（2026-10-29）**：`WaitPendingAsync`/`WaitQueryAsync` 超时必摘条目；`NextRequestId` 限次后抛异常 | `ctp-net-core` |
+| bot 无会话日志（只能靠前置反推） | **未修**（P2，本轮未动 `aether-ctp-hosts` 的启动脚本） | `aether-ctp-hosts` |
 | 价格被困在两跳带宽（不像真行情） | 已缓解（重置后 6 个价位 / 110 条 tick，见 2.5 注） | `aether-ctp-hosts/algorithms` |
 
 ## 5. 一句话回答「为啥办不到」
