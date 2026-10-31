@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using Ctp.Net.Front;
 using Aether.Exchange.Rpc;
 using Microsoft.Extensions.DependencyInjection;
@@ -22,6 +23,12 @@ using Microsoft.Extensions.Hosting;
 // ──────────────────────────────────────────────────────────────────────────────
 
 var builder = Host.CreateApplicationBuilder(args);
+
+// 与交易所 host 同款：Aether.Exchange.Rpc 的诊断走 Trace.WriteLine，服务形态没有控制台，
+// 不接监听器就只剩「会话关闭：交易所连接断开」这种结论行，看不到断开的原因（超时？写失败？坏帧？）。
+Trace.Listeners.Add(new LogTraceListener());
+Trace.AutoFlush = true;
+
 builder.Services.AddWindowsService();   // 服务器部署形态：SCM 启动 → ServiceLifetime（服务停止 = 停监听/优雅关停）；
                                         // 交互运行（dotnet run）仍是 console lifetime，本地行为零变。
                                         // 与 Sim.Host 同款——2026-10-05 分离时两 host 都漏了此调用，2026-10-06 补齐。
@@ -106,6 +113,16 @@ internal sealed record FrontHostOptions(string ExchangeHost, int ExchangePort, s
 }
 
 /// <summary>最小可观测性：恒写控制台；AETHER_CTP_FRONT_LOG 设了路径时（Windows 服务形态）追加到文件（镜像 Sim.Host 的 Log）。</summary>
+internal sealed class LogTraceListener : TraceListener
+{
+    public override void Write(string? message) { }
+
+    public override void WriteLine(string? message)
+    {
+        if (!string.IsNullOrEmpty(message)) Log.Line(message);
+    }
+}
+
 internal static class Log
 {
     private static readonly string? LogPath = Environment.GetEnvironmentVariable("AETHER_CTP_FRONT_LOG");

@@ -194,7 +194,8 @@ if (args.FirstOrDefault(a => a.Equals("--run-strategy", StringComparison.Ordinal
     }
     if (!session.IsConnected)
     {
-        HostLog.Line("[bot] 清场后 CTP 会话 90s 未恢复——退出（重跑即可）。");
+        HostLog.Line("[bot] 清场后 CTP 会话 90s 未恢复——退出（退出码 2，计划任务可据「失败时重启」拉起）。");
+        Environment.ExitCode = 2;
         session.Logout();
         return;
     }
@@ -206,7 +207,11 @@ if (args.FirstOrDefault(a => a.Equals("--run-strategy", StringComparison.Ordinal
     if (live.Status == LiveTradingRuntimeStatus.Running)
         await WaitBotExitAsync();
     else
-        HostLog.Line($"[bot] 引擎未进入运行态（{live.Status}）——退出。");
+    {
+        // 启动即失败（策略编译/引擎初始化炸了）也是「失败退出」——无人值守场景让计划任务重启接管
+        HostLog.Line($"[bot] 引擎未进入运行态（{live.Status}）——退出（退出码 2）。");
+        Environment.ExitCode = 2;
+    }
     if (live.IsRunning) { try { await live.StopAsync(); } catch { } }
     session.Logout();
     HostLog.Line("[bot] 已退出。");
@@ -480,6 +485,7 @@ async Task SweepOpenOrdersAsync()
 async Task WaitBotExitAsync()
 {
     var exit = new TaskCompletionSource();
+    var stopRequested = false;   // stdin "stop" = 显式停策略——与「引擎猝死」区分（后者才走失败退出）
     Console.CancelKeyPress += (_, e) =>
     {
         e.Cancel = true;   // 拦截默认终止——走优雅路径（StopAsync 撤单腿）
@@ -495,6 +501,24 @@ async Task WaitBotExitAsync()
             HostLog.Line("[bot] 收到 SIGTERM——优雅停止…");
             exit.TrySetResult();
         });
+    // 引擎猝死侦测（2026-10-30 事故：MM 策略 OnData 竞态 → RuntimeError → 引擎 Error，
+    // 进程活着、CTP 会话活着、计划任务显示 Running——但策略已死，日志停写，24 分钟无人知。
+    // 非我们请求的 Stopped/Error ⇒ 以退出码 2 结束，交给计划任务「失败时重启」拉起，别装活）。
+    _ = Task.Run(async () =>
+    {
+        while (!exit.Task.IsCompleted)
+        {
+            await Task.Delay(5000);
+            if (stopRequested || exit.Task.IsCompleted) return;
+            if (live.Status is LiveTradingRuntimeStatus.Stopped or LiveTradingRuntimeStatus.Error)
+            {
+                HostLog.Line($"[bot] 引擎非正常停止（{live.Status}）——以退出码 2 结束（计划任务应据「失败时重启」拉起）");
+                Environment.ExitCode = 2;
+                exit.TrySetResult();
+                return;
+            }
+        }
+    });
     _ = Task.Run(async () =>
     {
         while (!exit.Task.IsCompleted)
@@ -508,6 +532,7 @@ async Task WaitBotExitAsync()
                     exit.TrySetResult();
                     return;
                 case "stop":
+                    stopRequested = true;
                     HostLog.Line("[bot] 停止策略（输 quit 退出）…");
                     try { await live.StopAsync(); } catch { }
                     break;

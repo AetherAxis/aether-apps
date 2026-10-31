@@ -46,6 +46,12 @@ public class MarketMakerAlgo : LeanAlgorithmBase
     private DateTime _lastQuoteUtc = DateTime.MinValue;
     private readonly List<OrderTicket> _bidLegs = new();
     private readonly List<OrderTicket> _askLegs = new();
+    /// <summary>两条腿表的唯一门禁。OnData/兜底定时器跑在算法线程，OnOrderEvent 跑在事务线程——
+    /// 两侧并发读写同一 List：2026-10-30 21:05 事故，FillMissingLegs 的 legs.Sum 枚举到一半被
+    /// OnOrderEvent 的 RemoveAll 改表 ⇒ Collection was modified ⇒ RuntimeError ⇒ 引擎静默停策略
+    /// （进程活着、会话活着、24 分钟无人知）。lock 可重入：Cancel/LimitOrder 若同步回派
+    /// OnOrderEvent（同线程）不会自锁；跨线程则排队等维护段走完（毫秒级）。</summary>
+    private readonly object _legsGate = new();
 
     public static IReadOnlyList<StrategyParameterDef> ParameterDefinitions => new[]
     {
@@ -109,11 +115,15 @@ public class MarketMakerAlgo : LeanAlgorithmBase
 
     public override void OnOrderEvent(OrderEvent e)
     {
-        // 终态（撤/成/拒）清票根——腿位留缺，下一数据事件补（天然一跳延迟防双单）
+        // 终态（撤/成/拒）清票根——腿位留缺，下一数据事件补（天然一跳延迟防双单）。
+        // 本方法在事务线程上跑，与算法线程的 RefreshQuotes 并发——改表必须过 _legsGate（见字段注释）。
         if (e.Status.IsClosed())
         {
-            _bidLegs.RemoveAll(t => t.OrderId == e.OrderId);
-            _askLegs.RemoveAll(t => t.OrderId == e.OrderId);
+            lock (_legsGate)
+            {
+                _bidLegs.RemoveAll(t => t.OrderId == e.OrderId);
+                _askLegs.RemoveAll(t => t.OrderId == e.OrderId);
+            }
         }
         if (e.Status is OrderStatus.Filled or OrderStatus.PartiallyFilled)
             BotLog($"[MM] 成交 {e.Symbol.Value} {e.FillQuantity}@{e.FillPrice}（净持仓 {Portfolio[_symbol].Quantity}）");
@@ -135,7 +145,9 @@ public class MarketMakerAlgo : LeanAlgorithmBase
         if ((now - _lastPosLogUtc).TotalSeconds >= 15)
         {
             _lastPosLogUtc = now;
-            BotLog($"[MM] 仓位视图 Portfolio={pos} 在挂 买{_bidLegs.Count}/卖{_askLegs.Count} 预算 买{_positionCap - pos}/卖{_positionCap + pos}");
+            int bidLegs, askLegs;
+            lock (_legsGate) { bidLegs = _bidLegs.Count; askLegs = _askLegs.Count; }
+            BotLog($"[MM] 仓位视图 Portfolio={pos} 在挂 买{bidLegs}/卖{askLegs} 预算 买{_positionCap - pos}/卖{_positionCap + pos}");
         }
         var throttled = false;
         if (!force)
@@ -163,12 +175,17 @@ public class MarketMakerAlgo : LeanAlgorithmBase
         var desiredBids = DesiredLevels(bid: true);
         var desiredAsks = DesiredLevels(bid: false);
 
-        RollStaleLegs(_bidLegs, desiredBids, pos >= _positionCap, "买", isBid: true);
-        RollStaleLegs(_askLegs, desiredAsks, pos <= -_positionCap, "卖", isBid: false);
+        // 腿表维护全程持 _legsGate：RollStaleLegs 的 Cancel 可能同步回派 OnOrderEvent（同线程重入，
+        // lock 可重入所以安全），跨线程的终态事件则排队——枚举（Sum/Exists）与 RemoveAll/Add 不再交错。
+        lock (_legsGate)
+        {
+            RollStaleLegs(_bidLegs, desiredBids, pos >= _positionCap, "买", isBid: true);
+            RollStaleLegs(_askLegs, desiredAsks, pos <= -_positionCap, "卖", isBid: false);
 
-        // 补挂预算 = 仓限 − 该向敞口：多头越满买侧越薄，空头越满卖侧越薄
-        FillMissingLegs(_bidLegs, desiredBids, _positionCap - pos, isBid: true);
-        FillMissingLegs(_askLegs, desiredAsks, _positionCap + pos, isBid: false);
+            // 补挂预算 = 仓限 − 该向敞口：多头越满买侧越薄，空头越满卖侧越薄
+            FillMissingLegs(_bidLegs, desiredBids, _positionCap - pos, isBid: true);
+            FillMissingLegs(_askLegs, desiredAsks, _positionCap + pos, isBid: false);
+        }
     }
 
     /// <summary>期望档位价集合（内到外）：锚点 ∓ (SpreadTicks + i×档距)×PriceTick。</summary>
@@ -197,12 +214,14 @@ public class MarketMakerAlgo : LeanAlgorithmBase
         return Math.Abs(price - _anchoredLast) >= deadBand;
     }
 
-    /// <summary>撤移出带宽或触限的腿。撤单 pending 的腿不重复撤（等终态事件清根）。</summary>
+    /// <summary>撤移出带宽或触限的腿。撤单 pending 的腿不重复撤（等终态事件清根）。
+    /// 调用方必须已持 <see cref="_legsGate"/>（跨线程门禁），本方法内部的「先挑后撤」只防同线程同步重入。</summary>
     private void RollStaleLegs(List<OrderTicket> legs, List<decimal> desired, bool capped, string side, bool isBid)
     {
         // 先挑、后撤（不要边遍历边撤）：leg.Cancel() 可能**同步**派发 OnOrderEvent，终态分支会对
         // 同一个 legs 做 RemoveAll —— 直接 foreach 就撞「Collection was modified」把引擎打死
-        // （2026-10-24 botmm 实测：RuntimeError → 引擎退出）。
+        // （2026-10-24 botmm 实测：RuntimeError → 引擎退出；2026-10-30 该竞态又在 FillMissingLegs
+        // 的 legs.Sum 上以**跨线程**形式重演（引擎 Error 停策略、24 分钟无人知）——现由 _legsGate 收编）。
         var stale = new List<OrderTicket>();
         foreach (var leg in legs)
         {
@@ -225,6 +244,7 @@ public class MarketMakerAlgo : LeanAlgorithmBase
     /// <summary>
     /// 补缺档（内档优先）：该价位无活腿（撤单 pending 的腿也占位——防同价双单）且预算有余才挂。
     /// 预算先扣在挂剩余量，耗尽即停——外档先缺，仓位越满深度越薄。
+    /// 调用方必须已持 <see cref="_legsGate"/>（Sum/Exists/Add 全是枚举/改表，与事务线程的 RemoveAll 互斥）。
     /// </summary>
     private void FillMissingLegs(List<OrderTicket> legs, List<decimal> desired, decimal budget, bool isBid)
     {

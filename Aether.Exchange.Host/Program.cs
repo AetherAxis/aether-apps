@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using Ctp.Net;
 using Aether.Exchange.Rpc;
 using Aether.Exchange;
@@ -33,6 +34,13 @@ using Microsoft.Extensions.Hosting;
 // ──────────────────────────────────────────────────────────────────────────────
 
 var builder = Host.CreateApplicationBuilder(args);
+
+// RPC 层（Aether.Exchange.Rpc）用 Trace.WriteLine 报超时 / 断连 / 分发异常——服务形态没有控制台，
+// 不接一个监听器这些行会彻底消失。2026-10-31 排「botnoise 每 30 秒无故断一次」时就卡在这里：
+// 交易所日志从启动 banner 之后一片空白，看不到任何 RPC 侧动静。接上即可和 Log.Line 同文件。
+Trace.Listeners.Add(new LogTraceListener());
+Trace.AutoFlush = true;
+
 builder.Services.AddWindowsService();   // 服务器部署形态：SCM 启动 → ServiceLifetime（服务停止 = 优雅关停 flush 账本）；
                                         // 交互运行（dotnet run）仍是 console lifetime，本地行为零变。
                                         // 2026-10-06 服务起不来（Start-Service 1053 超时）的根因 = 2026-10-05 进程分离
@@ -114,6 +122,17 @@ internal sealed class ExchangeHostedService(SimTradingCore core, SimRpcServer se
 /// 最小可观测性：恒写控制台；<c>AETHER_CTP_SIM_LOG</c> 设了路径时（Windows 服务形态——headless 无控制台可见）
 /// 追加到文件。日志失败不致命（try/catch 吞）——遥测自身故障绝不打断交易所。
 /// </summary>
+internal sealed class LogTraceListener : TraceListener
+{
+    /// <summary>只收整行——RPC 层一律 <c>Trace.WriteLine</c>，Write 分支留空避免半行拼接。</summary>
+    public override void Write(string? message) { }
+
+    public override void WriteLine(string? message)
+    {
+        if (!string.IsNullOrEmpty(message)) Log.Line(message);
+    }
+}
+
 internal static class Log
 {
     private static readonly string? LogPath = Environment.GetEnvironmentVariable("AETHER_CTP_SIM_LOG");
