@@ -21,8 +21,14 @@ namespace LabsLeanAlgorithms;
 /// 要等终态事件+下一数据事件才补挂，这个窗口里该侧就是空的。
 /// <para/>
 /// 义务自律（库存偏斜的连续版）：补挂预算 = PositionCap − 该向敞口（当前持仓 + 在挂剩余量）——全部成交后极限
-/// 持仓恰触仓限。仓位越满该侧深度越薄（外档先缺），触限停挂该侧全部腿，超限市价减仓（对手侧只有自己挂单时会被
-/// 交易所自成交跳过 ⇒ 该轮失败，下一数据事件自动重试——真实做市语义）。
+/// 持仓恰触仓限。仓位越满该侧深度越薄（外档先缺）。
+/// <para/>
+/// <b>但簿上永远不许出现「一侧空」（2026-10-31 用户硬要求）</b>：旧版触限就撤光该侧并停挂（预算 ≤ 0），
+/// 实测空仓 −230 时卖侧全空、`ask=0/0`，市场只剩买单一路走高——所以预算有**保底**：某侧预算 ≤ 0 时
+/// 只留**最外一档保底腿**（<c>MinSideLots</c> 手，默认 1），不做「整侧静默」。同理超限减仓从
+/// 「MarketOrder → 对手价 IOC」改成「激进限价单挂在簿上」：单边簿上 IOC 必被作废（#31，实测每 300ms
+/// 打一发、成交 0、只刷爆订单数），而挂在簿上的减仓单对手一来就成交，没对手时它本身就是那一侧的盘口。
+/// </para>
 /// <para/>
 /// <b>挂单跟踪用 OrderTicket 自持</b>——brokerage 的 GetOpenOrders 刻意返空（引擎外订单不注册），
 /// 不能用它查自己的活单（会每帧重复挂单）；撤单是异步的：本轮撤、下一数据事件补（天然一跳延迟防双单——
@@ -41,11 +47,25 @@ public class MarketMakerAlgo : LeanAlgorithmBase
     private int _levels;           // 每侧档数
     private decimal _quoteVolume;  // 单档挂单手数
     private decimal _positionCap;
+    /// <summary>每侧保底手数：某侧预算被持仓吃光时，**最外一档仍挂**这么多手（0 = 退回旧的「整侧静默」，
+    /// 只在明确要关掉保底时设）。详见类注释。</summary>
+    private decimal _minSideLots;
+    /// <summary>当前挂着的那笔超限减仓限价单（同一时间只允许一笔；成交/撤掉后清空）。</summary>
+    private OrderTicket _reduceTicket;
+    /// <summary>两次减仓挂了之间的最小墙钟间隔——减仓单被反复撤挂会刷爆订单数（#31 的教训）。</summary>
+    private int _reduceIntervalMs;
+    private DateTime _lastReduceUtc = DateTime.MinValue;
     /// <summary>两次重新报价之间的最小墙钟间隔（防「tick → 撤改 → 簿变更 → tick」自激风暴）。</summary>
     private int _minQuoteIntervalMs;
     private DateTime _lastQuoteUtc = DateTime.MinValue;
     private readonly List<OrderTicket> _bidLegs = new();
     private readonly List<OrderTicket> _askLegs = new();
+    /// <summary>被交易所/前拒掉的档位价 → 解冻时刻。被拒的腿不会进 `_legs`（它已经是终态票），
+    /// 没有这张表的话每个数据事件都会照样再报一次同一档 ⇒ 报单风暴（2026-10-31 本地实测：
+    /// probe1 的 BuyClose 被 90006 连拒，同一档 300ms 一枪，委托表刷到 200 行）。</summary>
+    private readonly Dictionary<decimal, DateTime> _cooledUntil = new();
+    /// <summary>被拒档位的冷却时长（秒）——比交易所查询/回报的往返大一个量级即可，不要长到让那一档真的空掉。</summary>
+    private const int RejectCooldownSec = 3;
     /// <summary>两条腿表的唯一门禁。OnData/兜底定时器跑在算法线程，OnOrderEvent 跑在事务线程——
     /// 两侧并发读写同一 List：2026-10-30 21:05 事故，FillMissingLegs 的 legs.Sum 枚举到一半被
     /// OnOrderEvent 的 RemoveAll 改表 ⇒ Collection was modified ⇒ RuntimeError ⇒ 引擎静默停策略
@@ -61,6 +81,8 @@ public class MarketMakerAlgo : LeanAlgorithmBase
         new StrategyParameterDef("PriceTick", "最小变动价位", "0.01"),
         new StrategyParameterDef("QuoteVolume", "单档挂单手数", "5"),
         new StrategyParameterDef("PositionCap", "单边持仓上限（手）", "200"),
+        new StrategyParameterDef("MinSideLots", "触限侧最外档保底手数（0 = 允许整侧空）", "1"),
+        new StrategyParameterDef("ReduceIntervalMs", "超限减仓重挂最小间隔（毫秒）", "3000"),
         new StrategyParameterDef("MinQuoteIntervalMs", "最小重新报价间隔（毫秒，防自激风暴）", "300"),
         new StrategyParameterDef("RepriceThresholdTicks", "重定档容忍（last 偏离锚点多少 tick 才整体改挂）", "2"),
     };
@@ -84,6 +106,10 @@ public class MarketMakerAlgo : LeanAlgorithmBase
         _levels = GetIntParam("Levels", 5);
         _quoteVolume = GetDecimalParam("QuoteVolume", 5m);
         _positionCap = GetDecimalParam("PositionCap", 200m);
+        // 保底手数允许显式写 0（关掉保底），所以不走 GetDecimalParam（它把 0 当解析失败回退）。
+        _minSideLots = GetParameter("MinSideLots") is { Length: > 0 } msl && decimal.TryParse(msl, out var mslv) && mslv >= 0
+            ? mslv : 1m;
+        _reduceIntervalMs = GetIntParam("ReduceIntervalMs", 3000);
         _minQuoteIntervalMs = GetIntParam("MinQuoteIntervalMs", 300);
         _repriceThresholdTicks = GetIntParam("RepriceThresholdTicks", 2);
         // 兜底重挂（2026-10-18 36h 长跑定案）：算法纯事件驱动（tick→维护）——撤光/吃光挂单后若市场
@@ -91,7 +117,7 @@ public class MarketMakerAlgo : LeanAlgorithmBase
         // （实测 MM 撤光后 14h 不补挂、NT 吃陈旧价全作废）。定时器独立于行情，保证静止市场也会恢复深度
         // （force=true 绕过节流）。
         Schedule.On(DateRules.EveryDay(), TimeRules.Every(TimeSpan.FromSeconds(30)), () => RefreshQuotes(force: true));
-        BotLog($"[MM] 初始化 {_symbol.Value}: 上下各{_levels}档 点差{_spreadTicks}tick 档距{_levelStepTicks}tick 单档{_quoteVolume}手 仓限±{_positionCap} 最小报价间隔{_minQuoteIntervalMs}ms");
+        BotLog($"[MM] 初始化 {_symbol.Value}: 上下各{_levels}档 点差{_spreadTicks}tick 档距{_levelStepTicks}tick 单档{_quoteVolume}手 仓限±{_positionCap} 保底{_minSideLots}手/侧 减仓间隔{_reduceIntervalMs}ms 最小报价间隔{_minQuoteIntervalMs}ms");
         // 仓位来源自检（2026-10-29）：两侧挂腿由 Portfolio 净持仓算预算——若持仓视图与实际账户不符，
         // 会表现为「一侧永不挂单」（例：以为空头触限 ⇒ 预算 ≤0 ⇒ 卖侧静默消失 ⇒ 簿上无卖盘 ⇒ 永无成交）。
         // 这行把 Lean 的持仓视图摊到日志里，与「账户查询」的真值直接对照。
@@ -121,6 +147,17 @@ public class MarketMakerAlgo : LeanAlgorithmBase
         {
             lock (_legsGate)
             {
+                // 被拒的档位记进冷却表（票要出表了，价格得先抄下来）——见 _cooledUntil 注释
+                if (e.Status == OrderStatus.Invalid)
+                {
+                    var rejected = _bidLegs.Concat(_askLegs).FirstOrDefault(t => t.OrderId == e.OrderId);
+                    var rejectedPrice = rejected?.Get(OrderField.LimitPrice) ?? 0m;
+                    if (rejectedPrice > 0)
+                    {
+                        _cooledUntil[rejectedPrice] = DateTime.UtcNow.AddSeconds(RejectCooldownSec);
+                        BotLog($"[MM] 档位 @{rejectedPrice} 被拒：{RejectCooldownSec}s 内不再挂该档（冷却后自动重试）");
+                    }
+                }
                 _bidLegs.RemoveAll(t => t.OrderId == e.OrderId);
                 _askLegs.RemoveAll(t => t.OrderId == e.OrderId);
             }
@@ -136,6 +173,14 @@ public class MarketMakerAlgo : LeanAlgorithmBase
         var pos = security.Quantity;
         if (security.Price <= 0) return;   // 尚无行情价——市价减仓腿会被引擎拒价，等首个行情
 
+        // —— 两侧预算（2026-10-31「永不清空一侧」）：预算 = 仓限 − 该向敞口，**但地板是保底手数**。
+        // 预算 ≤ 0 ⇒ 该侧只挂最外一档保底腿（`capped`），不做整侧静默。实测教训：空仓 −230 时
+        // 卖预算 = −30 ⇒ 卖腿全撤、ask=0/0 ⇒ 只剩买单把 last 一路顶到 111.23（无人做对手盘）。
+        var bidBudget = Math.Max(_positionCap - pos, _minSideLots);
+        var askBudget = Math.Max(_positionCap + pos, _minSideLots);
+        var bidCapped = _positionCap - pos <= 0;
+        var askCapped = _positionCap + pos <= 0;
+
         // 节流（2026-10-25）：做市商挂在每次 tick 上，而撤改挂单本身又会制造簿变更 → 新 tick。
         // 不节流时这个回路会在同一毫秒内自我放大（实测：前端每秒被灌几百帧同值快照，客户端
         // native 侧积压后表现成「同一笔 tick 反复重投」、bot 日志 30 秒涨到 160MB）。
@@ -146,8 +191,20 @@ public class MarketMakerAlgo : LeanAlgorithmBase
         {
             _lastPosLogUtc = now;
             int bidLegs, askLegs;
-            lock (_legsGate) { bidLegs = _bidLegs.Count; askLegs = _askLegs.Count; }
-            BotLog($"[MM] 仓位视图 Portfolio={pos} 在挂 买{bidLegs}/卖{askLegs} 预算 买{_positionCap - pos}/卖{_positionCap + pos}");
+            string bidStates;
+            lock (_legsGate)
+            {
+                bidLegs = _bidLegs.Count;
+                askLegs = _askLegs.Count;
+                // 状态分布——腿表只涨不消时，光看条数分不清「真在簿」和「僵尸票」（无回报/撤单不回）。
+                bidStates = string.Join("/", _bidLegs.GroupBy(t => t.Status)
+                    .OrderByDescending(g => g.Count()).Take(4).Select(g => $"{g.Key}:{g.Count()}"));
+            }
+            var reserve = bidCapped || askCapped
+                ? $" 触限{(bidCapped ? "买" : "")}{(askCapped ? "卖" : "")}→只留最外档{_minSideLots}手"
+                : "";
+            BotLog($"[MM] 仓位视图 Portfolio={pos} 在挂 买{bidLegs}/卖{askLegs} 预算 买{bidBudget}/卖{askBudget}{reserve}" +
+                   (bidLegs > _levels * 3 ? $" 买腿状态[{bidStates}]" : ""));
         }
         var throttled = false;
         if (!force)
@@ -160,9 +217,10 @@ public class MarketMakerAlgo : LeanAlgorithmBase
             _lastQuoteUtc = now;
         }
 
-        // 超限减仓（自办强平）：市价吃非自有的对手流动性
-        if (pos > _positionCap) MarketOrder(_symbol, _positionCap - pos, tag: "超限减仓");
-        else if (pos < -_positionCap) MarketOrder(_symbol, -_positionCap - pos, tag: "超限减仓");
+        // 超限减仓（自办强平）——2026-10-31 从「市价 → 对手价 IOC」改成「激进限价挂在簿上」：
+        // 单边簿上 IOC 无对手可吃 ⇒ 每 300ms 打一发、成交 0、只刷爆订单数（#31）；挂在簿上的减仓单
+        // 对手一来就成交，没对手时它自己就是最内侧的盘口。
+        ManageForceReduce(pos);
 
         // —— 重定档锚点（2026-10-29 定案）：不为每个 tick 重算阶梯——
         // 真实 last 偏离锚点不足 RepriceThresholdTicks 就沿用旧锚点，已挂腿一律不动；
@@ -172,24 +230,27 @@ public class MarketMakerAlgo : LeanAlgorithmBase
         else if (!throttled && Math.Abs(anchor - _anchoredLast) >= _repriceThresholdTicks * _priceTick)
             _anchoredLast = anchor;
 
-        var desiredBids = DesiredLevels(bid: true);
-        var desiredAsks = DesiredLevels(bid: false);
+        // 触限侧只保留最外一档（保底腿的价位），非触限侧照旧整条阶梯
+        var desiredBids = DesiredLevels(bid: true, outerOnly: bidCapped);
+        var desiredAsks = DesiredLevels(bid: false, outerOnly: askCapped);
 
         // 腿表维护全程持 _legsGate：RollStaleLegs 的 Cancel 可能同步回派 OnOrderEvent（同线程重入，
         // lock 可重入所以安全），跨线程的终态事件则排队——枚举（Sum/Exists）与 RemoveAll/Add 不再交错。
         lock (_legsGate)
         {
-            RollStaleLegs(_bidLegs, desiredBids, pos >= _positionCap, "买", isBid: true);
-            RollStaleLegs(_askLegs, desiredAsks, pos <= -_positionCap, "卖", isBid: false);
+            RollStaleLegs(_bidLegs, desiredBids, bidCapped, "买", isBid: true);
+            RollStaleLegs(_askLegs, desiredAsks, askCapped, "卖", isBid: false);
 
-            // 补挂预算 = 仓限 − 该向敞口：多头越满买侧越薄，空头越满卖侧越薄
-            FillMissingLegs(_bidLegs, desiredBids, _positionCap - pos, isBid: true);
-            FillMissingLegs(_askLegs, desiredAsks, _positionCap + pos, isBid: false);
+            // 补挂预算 = 仓限 − 该向敞口（下限保底手数）：多头越满买侧越薄，空头越满卖侧越薄，
+            // 但**薄到只剩最外一档保底腿为止，不会变 0**
+            FillMissingLegs(_bidLegs, desiredBids, bidBudget, isBid: true);
+            FillMissingLegs(_askLegs, desiredAsks, askBudget, isBid: false);
         }
     }
 
-    /// <summary>期望档位价集合（内到外）：锚点 ∓ (SpreadTicks + i×档距)×PriceTick。</summary>
-    private List<decimal> DesiredLevels(bool bid)
+    /// <summary>期望档位价集合（内到外）：锚点 ∓ (SpreadTicks + i×档距)×PriceTick。
+    /// <paramref name="outerOnly"/> = 该侧已触限：只返回**最外一档**（保底腿的价位）。</summary>
+    private List<decimal> DesiredLevels(bool bid, bool outerOnly = false)
     {
         var levels = new List<decimal>(_levels);
         for (var i = 0; i < _levels; i++)
@@ -197,7 +258,48 @@ public class MarketMakerAlgo : LeanAlgorithmBase
             var offset = (_spreadTicks + i * _levelStepTicks) * _priceTick;
             levels.Add(RoundToTick(bid ? _anchoredLast - offset : _anchoredLast + offset));
         }
+        if (outerOnly && levels.Count > 1) levels.RemoveRange(0, levels.Count - 1);
         return levels;
+    }
+
+    /// <summary>
+    /// 超限减仓：把超出仓限的部分做成一张**挂在簿上的激进限价单**（买 → last+tick，卖 → last−tick），
+    /// 同一时间只留一笔，成交/撤掉后才换新单。
+    /// <para>
+    /// 为什么不再用 <c>MarketOrder</c>：它的语义是对手价 IOC——簿上没对手（正是需要减仓的单边行情）就必被作废，
+    /// 于是每个 tick 重打一张、张张作废，把订单数刷到几百（open-issues #31）。限价单挂在最内侧，
+    /// 有对手就成交、没对手就是那一侧的盘口，两种情况下都达成目的。
+    /// </para>
+    /// 价格跑远（超过内档带）才换价重挂，且重挂有墙钟节流——防「撤改减仓单」自激。
+    /// </summary>
+    private void ManageForceReduce(decimal pos)
+    {
+        var over = pos > _positionCap ? _positionCap - pos        // 多头超限：负数 ⇒ 要卖
+                 : pos < -_positionCap ? -_positionCap - pos      // 空头超限：正数 ⇒ 要买
+                 : 0m;
+        if (over == 0)
+        {
+            // 回到限内：撤掉还挂着的减仓单（不留无理撤单以外的活单，open-issues #29）
+            if (_reduceTicket is { } t && !t.Status.IsClosed()) t.Cancel();
+            _reduceTicket = null;
+            return;
+        }
+        if (_reduceTicket is { } live && !live.Status.IsClosed())
+        {
+            var resting = live.Get(OrderField.LimitPrice);
+            if (Math.Abs(_last - resting) <= (_spreadTicks + 1) * _priceTick) return;   // 还在内侧，等对手
+            live.Cancel();                                                              // 跑远了：换价
+            _reduceTicket = null;
+        }
+        var now = DateTime.UtcNow;
+        if ((now - _lastReduceUtc).TotalMilliseconds < _reduceIntervalMs) return;
+        _lastReduceUtc = now;
+
+        var isBuy = over > 0;
+        var volume = Math.Min(Math.Abs(over), _quoteVolume);   // 分批减，避免一次性砸穿簿
+        var price = RoundToTick(isBuy ? _last + _priceTick : _last - _priceTick);
+        _reduceTicket = LimitOrder(_symbol, isBuy ? volume : -volume, price, tag: "超限减仓");
+        BotLog($"[MM] 超限减仓：挂{(isBuy ? "买" : "卖")} {price} × {volume}手（持仓 {pos}，超出 {Math.Abs(over):0.##} 手）");
     }
 
     /// <summary>
@@ -214,7 +316,11 @@ public class MarketMakerAlgo : LeanAlgorithmBase
         return Math.Abs(price - _anchoredLast) >= deadBand;
     }
 
-    /// <summary>撤移出带宽或触限的腿。撤单 pending 的腿不重复撤（等终态事件清根）。
+    /// <summary>撤移出带宽或触限的多余腿。撤单 pending 的腿不重复撤（等终态事件清根）。
+    /// <para>
+    /// <b>触限（<paramref name="capped"/>）不再撤光整侧</b>：此时 <paramref name="desired"/> 只剩最外一档
+    /// （保底腿），这一档留着，其它档全撤——「仓位满了但盘口不空」。
+    /// </para>
     /// 调用方必须已持 <see cref="_legsGate"/>（跨线程门禁），本方法内部的「先挑后撤」只防同线程同步重入。</summary>
     private void RollStaleLegs(List<OrderTicket> legs, List<decimal> desired, bool capped, string side, bool isBid)
     {
@@ -229,10 +335,12 @@ public class MarketMakerAlgo : LeanAlgorithmBase
             var price = leg.Get(OrderField.LimitPrice);
             if (capped)
             {
-                BotLog($"[MM] 撤{side}腿 @{price}（触限）");
+                // 保底档留下，其余（内档/旧档）全撤——触限只影响深度，不影响「有没有这一侧」
+                if (desired.Any(d => SameLevel(price, d))) continue;
+                BotLog($"[MM] 撤{side}腿 @{price}（触限：只留保底档 @{desired[0]}）");
                 stale.Add(leg);
             }
-            else if (!desired.Contains(price) && ShouldRoll(price, isBid))
+            else if (!desired.Any(d => SameLevel(price, d)) && ShouldRoll(price, isBid))
             {
                 BotLog($"[MM] 撤{side}腿 @{price}（移出带宽）");
                 stale.Add(leg);
@@ -250,9 +358,13 @@ public class MarketMakerAlgo : LeanAlgorithmBase
     {
         if (budget <= 0) return;
         var resting = legs.Sum(t => Math.Abs(t.QuantityRemaining));
+        var nowUtc = DateTime.UtcNow;
         foreach (var price in desired)
         {
-            if (legs.Exists(t => t.Get(OrderField.LimitPrice) == price)) continue;
+            // 被拒过的档正在冷却：这一轮不碰它（原因见 _cooledUntil）
+            if (_cooledUntil.TryGetValue(price, out var until) && until > nowUtc) continue;
+            if (_cooledUntil.TryGetValue(price, out var expired) && expired <= nowUtc) _cooledUntil.Remove(price);
+            if (legs.Exists(t => SameLevel(t.Get(OrderField.LimitPrice), price))) continue;
             var volume = Math.Min(_quoteVolume, budget - resting);
             if (volume < 1m) break;
             var ticket = LimitOrder(_symbol, isBid ? volume : -volume, price, tag: isBid ? "MM买" : "MM卖");
@@ -263,6 +375,14 @@ public class MarketMakerAlgo : LeanAlgorithmBase
             BotLog($"[MM] 挂{(isBid ? "买" : "卖")} {price} × {volume}手（last={_last}）");
         }
     }
+
+    /// <summary>
+    /// 腿价与期望档位算不算同一档：**不能比精确相等**。brokerage 会按它的价格精度取整
+    /// （2026-10-31 实测：Lean 把 117.09375 取成 117.09 再发给前置），于是「在挂的腿」永远不等于
+    /// 「期望档位」⇒ 每条腿每轮都被判「移出带宽」⇒ 撤了立刻补、补了立刻撤的撤挂风暴（日志里全是
+    /// 挂/撤对，成交 0）。半个 tick 以内算同档：相邻档恰好差一个 tick，不会误并。
+    /// </summary>
+    private bool SameLevel(decimal legPrice, decimal desired) => Math.Abs(legPrice - desired) < _priceTick / 2;
 
     private decimal RoundToTick(decimal price)
         => _priceTick > 0 ? Math.Round(price / _priceTick) * _priceTick : price;
